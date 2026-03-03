@@ -3,6 +3,7 @@ const { readFileSync, writeFileSync, existsSync } = require('fs');
 const { join } = require('path');
 const { parseCommand, resolveValidDir } = require('./utils');
 const stats = require('./stats'); // TEMPORARY
+const transcript = require('./transcript');
 
 const MAX_BUFFER = 200 * 1024;
 const SAVED_PATH = join(__dirname, 'sessions.json');
@@ -42,11 +43,13 @@ function spawnSession(id, cmd, parts, cwd, name, profileId, commandId) {
       if (match) session.sessionToken = match[1];
     }
     stats.trackOut(id, data); // TEMPORARY
+    transcript.trackOutput(id, data);
     broadcast({ type: 'output', id, data });
   });
 
   term.onExit(() => {
     stats.clear(id); // TEMPORARY
+    transcript.clear(id);
     sessions.delete(id);
     broadcast({ type: 'closed', id });
   });
@@ -121,7 +124,11 @@ function resume(msg, ws, cfg) {
 
 // --- Standard session operations ---
 
-function input(msg)  { stats.trackIn(msg.id, msg.data.length); sessions.get(msg.id)?.pty.write(msg.data); } // TEMPORARY: trackIn
+function input(msg) {
+  stats.trackIn(msg.id, msg.data.length); // TEMPORARY
+  transcript.trackInput(msg.id, msg.data);
+  sessions.get(msg.id)?.pty.write(msg.data);
+}
 function resize(msg) { sessions.get(msg.id)?.pty.resize(msg.cols, msg.rows); }
 
 function rename(msg) {
@@ -137,7 +144,7 @@ function setProfile(id, profileId) {
 
 function close(msg) {
   const s = sessions.get(msg.id);
-  if (s) { s.pty.kill(); sessions.delete(msg.id); broadcast({ type: 'closed', id: msg.id }); }
+  if (s) { s.pty.kill(); transcript.clear(msg.id); sessions.delete(msg.id); broadcast({ type: 'closed', id: msg.id }); }
 }
 
 function list() {

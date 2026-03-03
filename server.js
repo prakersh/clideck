@@ -6,8 +6,11 @@ const { ensurePtyHelper } = require('./utils');
 const { onConnection } = require('./handlers');
 const sessions = require('./sessions');
 
+const transcript = require('./transcript');
+
 ensurePtyHelper();
 sessions.loadSessions();
+transcript.init(sessions.broadcast);
 
 const PORT = 4000;
 const MIME = { '.html': 'text/html', '.css': 'text/css', '.js': 'application/javascript', '.png': 'image/png', '.svg': 'image/svg+xml' };

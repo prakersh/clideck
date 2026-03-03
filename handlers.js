@@ -3,6 +3,7 @@ const sessions = require('./sessions');
 const themes = require('./themes');
 const presets = require('./agent-presets.json');
 const { listDirs } = require('./utils');
+const transcript = require('./transcript');
 
 let cfg = config.load();
 
@@ -14,6 +15,7 @@ function onConnection(ws) {
   ws.send(JSON.stringify({ type: 'presets', presets }));
   ws.send(JSON.stringify({ type: 'sessions', list: sessions.list() }));
   ws.send(JSON.stringify({ type: 'sessions.resumable', list: sessions.getResumable() }));
+  ws.send(JSON.stringify({ type: 'transcript.cache', cache: transcript.getCache() }));
   sessions.sendBuffers(ws);
 
   ws.on('message', (raw) => {

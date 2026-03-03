@@ -1,5 +1,5 @@
 import { state, send } from './state.js';
-import { addTerminal, removeTerminal, select, startRename, setSessionProfile, openMenu, closeMenu, setStatus, debugBuffer, updatePreview } from './terminals.js';
+import { addTerminal, removeTerminal, select, startRename, setSessionProfile, openMenu, closeMenu, setStatus, debugBuffer, updatePreview, markUnread, applyFilter, setTab } from './terminals.js';
 import { renderSettings } from './settings.js';
 import { openCreator, closeCreator } from './creator.js';
 import { handleDirsResponse } from './folder-picker.js';
@@ -47,6 +47,7 @@ function connect() {
       case 'output':
         state.terms.get(msg.id)?.term.write(msg.data);
         updatePreview(msg.id);
+        markUnread(msg.id);
         break;
       case 'closed':
         removeTerminal(msg.id);
@@ -87,6 +88,21 @@ function connect() {
 
           if (entry.workTicks >= 2) setStatus(sid, true);
           else if (entry.idleTicks >= 2) setStatus(sid, false);
+        }
+        break;
+      }
+      case 'transcript.cache':
+        for (const [id, text] of Object.entries(msg.cache)) {
+          const entry = state.terms.get(id);
+          if (entry) entry.searchText = text;
+        }
+        break;
+      // #6: Re-apply filter when transcript data changes
+      case 'transcript.append': {
+        const entry = state.terms.get(msg.id);
+        if (entry) {
+          entry.searchText = (entry.searchText || '') + '\n' + msg.text;
+          if (state.filter.query) applyFilter();
         }
         break;
       }
@@ -145,6 +161,16 @@ sessionList.addEventListener('session-delete', async (e) => {
 });
 
 document.getElementById('btn-new').addEventListener('click', openCreator);
+
+// Search & filter toolbar
+document.getElementById('search-input').addEventListener('input', (e) => {
+  state.filter.query = e.target.value;
+  applyFilter();
+});
+document.querySelectorAll('.filter-tab').forEach(btn => {
+  btn.addEventListener('click', () => setTab(btn.dataset.tab));
+});
+
 
 new ResizeObserver(() => {
   if (!state.active) return;

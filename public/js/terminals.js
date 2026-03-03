@@ -156,6 +156,7 @@ export function addTerminal(id, name, profileId, commandId) {
         <span class="session-preview text-xs text-slate-500 truncate"></span>
       </div>
     </div>
+    <span class="unread-dot hidden w-2 h-2 rounded-full bg-blue-500 flex-shrink-0"></span>
     <button class="menu-btn opacity-0 group-hover:opacity-100 text-slate-500 hover:text-slate-300 flex-shrink-0 p-0.5 transition-opacity" title="Menu">
       <svg class="w-4 h-4" fill="none" viewBox="0 0 20 20"><path d="M10 6l-4 4h8l-4-4z" fill="currentColor"/></svg>
     </button>`;
@@ -177,7 +178,7 @@ export function addTerminal(id, name, profileId, commandId) {
   term.open(el);
   term.onData(data => send({ type: 'input', id, data }));
 
-  state.terms.set(id, { term, fit, el, profileId, commandId, working: true, lastActivityAt: Date.now() });
+  state.terms.set(id, { term, fit, el, profileId, commandId, working: true, lastActivityAt: Date.now(), unread: false, lastPreviewText: '', searchText: '' });
   document.getElementById('empty').style.display = 'none';
   document.getElementById('terminals').style.pointerEvents = '';
 }
@@ -214,6 +215,13 @@ export function select(id) {
   const entry = state.terms.get(id);
   if (entry) {
     entry.el.classList.add('active');
+    if (entry.unread) {
+      entry.unread = false;
+      const dot = document.querySelector(`.group[data-id="${id}"] .unread-dot`);
+      if (dot) dot.classList.add('hidden');
+      updateUnreadBadge();
+      if (state.filter.tab === 'unread') setTab('all');
+    }
     requestAnimationFrame(() => {
       entry.fit.fit();
       send({ type: 'resize', id, cols: entry.term.cols, rows: entry.term.rows });
@@ -225,6 +233,16 @@ export function select(id) {
 
 // --- Preview & status ---
 
+export function markUnread(id) {
+  const entry = state.terms.get(id);
+  if (!entry || id === state.active || entry.unread) return;
+  entry.unread = true;
+  const dot = document.querySelector(`.group[data-id="${id}"] .unread-dot`);
+  if (dot) dot.classList.remove('hidden');
+  updateUnreadBadge();
+  applyFilter();
+}
+
 export function updatePreview(id) {
   const entry = state.terms.get(id);
   if (!entry) return;
@@ -232,6 +250,7 @@ export function updatePreview(id) {
   const el = document.querySelector(`.group[data-id="${id}"] .session-preview`);
   if (el && last && el.textContent !== last) {
     el.textContent = last;
+    entry.lastPreviewText = last;
     entry.lastActivityAt = Date.now();
   }
   const timeEl = document.querySelector(`.group[data-id="${id}"] .session-time`);
@@ -351,6 +370,42 @@ export function startRename(id) {
   };
   el.addEventListener('blur', finish, { once: true });
   el.addEventListener('keydown', onKey);
+}
+
+// --- Filtering ---
+
+export function applyFilter() {
+  const { query, tab } = state.filter;
+  const q = query.toLowerCase();
+  for (const [id, entry] of state.terms) {
+    const el = document.querySelector(`.group[data-id="${id}"]`);
+    if (!el) continue;
+    const matchTab = tab === 'all' || entry.unread;
+    const name = el.querySelector('.name')?.textContent.toLowerCase() || '';
+    const matchQuery = !q || name.includes(q) || (entry.searchText || '').toLowerCase().includes(q);
+    el.style.display = matchTab && matchQuery ? '' : 'none';
+  }
+}
+
+export function setTab(tab) {
+  state.filter.tab = tab;
+  document.querySelectorAll('.filter-tab').forEach(btn => {
+    const active = btn.dataset.tab === tab;
+    const base = 'filter-tab flex-1 text-[11px] font-medium py-[5px] rounded-md transition-all';
+    const extra = btn.dataset.tab === 'unread' ? ' flex items-center justify-center gap-1' : '';
+    btn.className = base + extra + (active ? ' bg-slate-700/60 text-slate-200' : ' text-slate-500 hover:text-slate-400');
+  });
+  applyFilter();
+}
+
+function updateUnreadBadge() {
+  let count = 0;
+  for (const [, entry] of state.terms) if (entry.unread) count++;
+  const badge = document.getElementById('unread-badge');
+  if (badge) {
+    badge.textContent = count || '';
+    badge.classList.toggle('hidden', count === 0);
+  }
 }
 
 // Refresh displayed timestamps every 60s so they age naturally

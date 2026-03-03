@@ -6,6 +6,7 @@ export const state = {
   themes: [],
   presets: [],
   resumable: [],
+  filter: { query: '', tab: 'all' },
 };
 
 export function send(msg) {
