@@ -457,11 +457,12 @@ function setStatus(id, working) {
     const isViewing = document.hasFocus() && state.active === id;
     if (state.cfg.notifyIdle && !isViewing && workDuration >= minWork
         && 'Notification' in window && Notification.permission === 'granted') {
-      const name = document.querySelector(`.group[data-id="${id}"] .name`)?.textContent || 'Session';
-      const preview = entry.lastPreviewText || '';
+      const sessionName = document.querySelector(`.group[data-id="${id}"] .name`)?.textContent || 'Session';
       const proj = state.cfg.projects?.find(p => p.id === entry.projectId);
-      const body = (proj ? proj.name + ' · ' : '') + preview;
-      const n = new Notification(`${name} is idle`, { body, icon: '/img/termix-logo-icon.png', tag: id });
+      const title = proj ? `${proj.name}: ${sessionName}` : sessionName;
+      const preview = entry.lastPreviewText || '';
+      const body = `Is now idle.\n${preview}`;
+      const n = new Notification(title, { body, icon: '/img/termix-logo-icon.png', tag: id });
       n.onclick = () => { window.focus(); select(id); n.close(); };
     }
   }
