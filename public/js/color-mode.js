@@ -1,9 +1,12 @@
 import { state, send } from './state.js';
 import { applyTheme } from './profiles.js';
 
+const LIGHT_THEMES = new Set(['github-light', 'solarized-light', 'catppuccin-latte', 'one-light', 'rose-pine-dawn']);
 const DARK_DEFAULTS = new Set(['solarized-dark', 'dracula', 'default']);
 const LIGHT_DEFAULT = 'github-light';
 const DARK_DEFAULT = 'solarized-dark';
+
+export function isLightTheme(id) { return LIGHT_THEMES.has(id); }
 
 function isDarkDefault(id) { return DARK_DEFAULTS.has(id); }
 

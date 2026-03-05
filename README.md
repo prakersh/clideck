@@ -1,6 +1,7 @@
 # Termix
 
 Termix is a local web UI for running, organizing, and resuming multiple CLI-based coding agent sessions in one place.
+Termix is a thin coordination layer over your existing terminal tools, like Slack for your terminal sessions. It does not replace or modify your terminal workflow.
 At first glance it feels like a cleaner terminal organizer. The real advantage is telemetry: Termix can tell when each agent is working, idle, or waiting for input.
 
 ## What It Does

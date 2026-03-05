@@ -26,6 +26,7 @@ function updateTimeEl(el, ts) {
 
 
 const TERMINAL_SVG = `<svg class="w-3.5 h-3.5 text-slate-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/></svg>`;
+const MIN_CONTRAST_RATIO = 4.5;
 
 const DARK_BALLS = ['#00e5ff', '#5df0d6', '#9b8cff'];
 const LIGHT_BALLS = ['#0891b2', '#059669', '#7c3aed'];
@@ -275,7 +276,9 @@ export function addTerminal(id, name, themeId, commandId, projectId) {
 
   document.getElementById('session-list').appendChild(item);
   const statusEl = item.querySelector('.session-status');
-  const stopBounce = startBounce(statusEl);
+  const cmd = state.cfg.commands.find(c => c.id === commandId);
+  const hasBridge = !!cmd?.bridge;
+  const stopBounce = hasBridge ? null : startBounce(statusEl);
 
   const el = document.createElement('div');
   el.className = 'term-wrap';
@@ -286,6 +289,8 @@ export function addTerminal(id, name, themeId, commandId, projectId) {
     fontSize: 13,
     fontFamily: 'Menlo, Monaco, "Courier New", monospace',
     theme: resolveTheme(themeId),
+    // Keep ANSI/truecolor output readable across dark and light terminal themes.
+    minimumContrastRatio: MIN_CONTRAST_RATIO,
     cursorBlink: true,
     scrollback: 5000,
   });
@@ -308,7 +313,7 @@ export function addTerminal(id, name, themeId, commandId, projectId) {
   ro.observe(el);
   // Safety: if RO hasn't fired within 500ms, flush anyway to avoid unbounded queue
   setTimeout(() => { if (!fitted) { fitted = true; for (const chunk of pending) term.write(chunk); pending = null; } }, 500);
-  state.terms.set(id, { term, fit, el, ro, themeId, commandId, projectId: projectId || null, working: true, workStartedAt: Date.now(), stopBounce, queue: (data) => { if (!fitted) { pending.push(data); return true; } return false; }, lastActivityAt: Date.now(), unread: false, lastPreviewText: '', searchText: '' });
+  state.terms.set(id, { term, fit, el, ro, themeId, commandId, projectId: projectId || null, working: !hasBridge, workStartedAt: hasBridge ? null : Date.now(), stopBounce, queue: (data) => { if (!fitted) { pending.push(data); return true; } return false; }, lastActivityAt: Date.now(), unread: false, lastPreviewText: '', searchText: '' });
   document.getElementById('empty').style.display = 'none';
   document.getElementById('terminals').style.pointerEvents = '';
 

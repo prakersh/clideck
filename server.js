@@ -13,6 +13,7 @@ ensurePtyHelper();
 sessions.loadSessions();
 transcript.init(sessions.broadcast);
 telemetry.init(sessions.broadcast, sessions.getSessions);
+require('./opencode-bridge').init(sessions.broadcast, sessions.getSessions);
 
 const PORT = 4000;
 const MIME = { '.html': 'text/html', '.css': 'text/css', '.js': 'application/javascript', '.png': 'image/png', '.svg': 'image/svg+xml' };
@@ -40,6 +41,17 @@ const server = http.createServer((req, res) => {
         req.body = null;
       }
       telemetry.handleLogs(req, res);
+    });
+    return;
+  }
+
+  // OpenCode plugin bridge events
+  if (req.method === 'POST' && req.url === '/opencode-events') {
+    let body = '';
+    req.on('data', chunk => { body += chunk; if (body.length > 1e5) req.destroy(); });
+    req.on('end', () => {
+      try { require('./opencode-bridge').handleEvent(JSON.parse(body)); } catch {}
+      res.writeHead(200).end('{}');
     });
     return;
   }

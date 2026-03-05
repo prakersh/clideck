@@ -71,7 +71,10 @@
     "canResume": true,
     "resumeCommand": "opencode --session {{sessionId}}",
     "sessionIdPattern": "(ses_[a-zA-Z0-9]{10,})",
-    "outputMarker": "\u2502"
+    "outputMarker": "\u2502",
+    "bridge": "opencode",
+    "pluginPath": "~/.config/opencode/plugins/termix-bridge.js",
+    "pluginSetup": "Copy the Termix bridge plugin to enable real-time status and resume:\n\ncp opencode-plugin/termix-bridge.js ~/.config/opencode/plugins/"
   },
   {
     "presetId": "shell",

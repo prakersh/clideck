@@ -1,7 +1,11 @@
 // Built-in terminal theme presets.
 // Each theme is a valid xterm.js ITheme object.
+// Users can add custom themes via custom-themes.json in the project root.
 
-const THEMES = [
+const { readFileSync, existsSync } = require('fs');
+const { join } = require('path');
+
+const BUILT_IN = [
   {
     id: 'default',
     name: 'Default',
@@ -152,36 +156,91 @@ const THEMES = [
       brightBlue: '#83a598', brightMagenta: '#d3869b', brightCyan: '#8ec07c', brightWhite: '#ebdbb2',
     },
   },
+  // ── Light themes ──
   {
     id: 'github-light',
     name: 'GitHub Light',
     accent: '#0969da',
     theme: {
-      background: '#ffffff',
-      foreground: '#1f2328',
+      background: '#f6f8fa',
+      foreground: '#24292f',
       cursor: '#044289',
       selectionBackground: '#b6d4fe',
-      black: '#24292f', red: '#cf222e', green: '#116329', yellow: '#4d2d00',
-      blue: '#0969da', magenta: '#8250df', cyan: '#1b7c83', white: '#6e7781',
-      brightBlack: '#57606a', brightRed: '#a40e26', brightGreen: '#1a7f37', brightYellow: '#633c01',
-      brightBlue: '#218bff', brightMagenta: '#a475f9', brightCyan: '#3192aa', brightWhite: '#8c959f',
+      black: '#24292f', red: '#cf222e', green: '#116329', yellow: '#9a6700',
+      blue: '#0550ae', magenta: '#8250df', cyan: '#1b7c83', white: '#6e7781',
+      brightBlack: '#57606a', brightRed: '#a40e26', brightGreen: '#1a7f37', brightYellow: '#7d4e00',
+      brightBlue: '#0969da', brightMagenta: '#a475f9', brightCyan: '#3192aa', brightWhite: '#8c959f',
     },
   },
   {
-    id: 'github-light-2',
-    name: 'GitHub Light 2',
-    accent: '#0969da',
+    id: 'solarized-light',
+    name: 'Solarized Light',
+    accent: '#268bd2',
     theme: {
-      background: '#f7f5f3',
-      foreground: '#1f2328',
-      cursor: '#044289',
-      selectionBackground: '#b6d4fe',
-      black: '#24292f', red: '#cf222e', green: '#116329', yellow: '#4d2d00',
-      blue: '#0969da', magenta: '#8250df', cyan: '#1b7c83', white: '#6e7781',
-      brightBlack: '#57606a', brightRed: '#a40e26', brightGreen: '#1a7f37', brightYellow: '#633c01',
-      brightBlue: '#218bff', brightMagenta: '#a475f9', brightCyan: '#3192aa', brightWhite: '#8c959f',
+      background: '#fdf6e3',
+      foreground: '#657b83',
+      cursor: '#586e75',
+      selectionBackground: '#eee8d5',
+      black: '#073642', red: '#dc322f', green: '#859900', yellow: '#b58900',
+      blue: '#268bd2', magenta: '#d33682', cyan: '#2aa198', white: '#93a1a1',
+      brightBlack: '#586e75', brightRed: '#cb4b16', brightGreen: '#859900', brightYellow: '#b58900',
+      brightBlue: '#268bd2', brightMagenta: '#6c71c4', brightCyan: '#2aa198', brightWhite: '#839496',
+    },
+  },
+  {
+    id: 'catppuccin-latte',
+    name: 'Catppuccin Latte',
+    accent: '#1e66f5',
+    theme: {
+      background: '#eff1f5',
+      foreground: '#4c4f69',
+      cursor: '#dc8a78',
+      selectionBackground: '#ccd0da',
+      black: '#5c5f77', red: '#d20f39', green: '#40a02b', yellow: '#df8e1d',
+      blue: '#1e66f5', magenta: '#ea76cb', cyan: '#179299', white: '#7c7f93',
+      brightBlack: '#6c6f85', brightRed: '#d20f39', brightGreen: '#40a02b', brightYellow: '#df8e1d',
+      brightBlue: '#1e66f5', brightMagenta: '#ea76cb', brightCyan: '#179299', brightWhite: '#8c8fa1',
+    },
+  },
+  {
+    id: 'one-light',
+    name: 'One Light',
+    accent: '#4078f2',
+    theme: {
+      background: '#fafafa',
+      foreground: '#383a42',
+      cursor: '#526eff',
+      selectionBackground: '#d4d8e0',
+      black: '#383a42', red: '#e45649', green: '#50a14f', yellow: '#c18401',
+      blue: '#4078f2', magenta: '#a626a4', cyan: '#0184bc', white: '#696c77',
+      brightBlack: '#696c77', brightRed: '#e45649', brightGreen: '#50a14f', brightYellow: '#c18401',
+      brightBlue: '#4078f2', brightMagenta: '#a626a4', brightCyan: '#0184bc', brightWhite: '#a0a1a7',
+    },
+  },
+  {
+    id: 'rose-pine-dawn',
+    name: 'Rosé Pine Dawn',
+    accent: '#907aa9',
+    theme: {
+      background: '#faf4ed',
+      foreground: '#575279',
+      cursor: '#575279',
+      selectionBackground: '#dfdad9',
+      black: '#575279', red: '#b4637a', green: '#286983', yellow: '#ea9d34',
+      blue: '#56949f', magenta: '#907aa9', cyan: '#d7827e', white: '#797593',
+      brightBlack: '#797593', brightRed: '#b4637a', brightGreen: '#286983', brightYellow: '#ea9d34',
+      brightBlue: '#56949f', brightMagenta: '#907aa9', brightCyan: '#d7827e', brightWhite: '#9893a5',
     },
   },
 ];
+
+// Load user custom themes from custom-themes.json
+function loadCustom() {
+  const p = join(__dirname, 'custom-themes.json');
+  if (!existsSync(p)) return [];
+  try { return JSON.parse(readFileSync(p, 'utf8')); } catch { return []; }
+}
+
+const THEMES = [...BUILT_IN, ...loadCustom()];
 
 module.exports = THEMES;

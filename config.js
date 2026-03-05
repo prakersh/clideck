@@ -50,6 +50,8 @@ function migrate(cfg) {
     if (preset?.presetId === 'claude-code') cmd.telemetryEnabled = true;
     else if (cmd.telemetryEnabled === undefined) cmd.telemetryEnabled = false;
     if (cmd.telemetryStatus === undefined)  cmd.telemetryStatus = null;
+    // Sync bridge config from preset
+    if (preset?.bridge) cmd.bridge = preset.bridge;
   }
   // Auto-add any shipped presets not yet in the commands list
   for (const preset of PRESETS) {

@@ -5,6 +5,7 @@ const { parseCommand, resolveValidDir } = require('./utils');
 const stats = require('./stats'); // TEMPORARY
 const transcript = require('./transcript');
 const telemetry = require('./telemetry-receiver');
+const opencodeBridge = require('./opencode-bridge');
 
 const MAX_BUFFER = 200 * 1024;
 const PORT = 4000;
@@ -57,6 +58,7 @@ function spawnSession(id, cmd, parts, cwd, name, themeId, commandId, savedToken,
   const bin = cmd.command.split('/').pop().split(' ')[0];
   const preset = PRESETS.find(p => p.command.split('/').pop() === bin);
   if (preset?.telemetrySetup && cmd.telemetryEnabled) telemetry.watchSession(id);
+  if (preset?.bridge === 'opencode') opencodeBridge.watchSession(id, cwd);
 
   term.onData((data) => {
     session.chunks.push(data);
@@ -77,6 +79,7 @@ function spawnSession(id, cmd, parts, cwd, name, themeId, commandId, savedToken,
   term.onExit(() => {
     stats.clear(id); // TEMPORARY
     telemetry.clear(id);
+    opencodeBridge.clear(id);
     transcript.clear(id);
     sessions.delete(id);
     broadcast({ type: 'closed', id });

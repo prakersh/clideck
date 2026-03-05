@@ -62,10 +62,23 @@ function connect() {
       case 'closed':
         removeTerminal(msg.id);
         break;
-      // Telemetry-based working/idle
+      // Telemetry/bridge working/idle
       case 'session.status':
+        console.log('[ws] session.status', msg.id?.slice(0,8), 'working=', msg.working);
         setStatus(msg.id, msg.working);
         break;
+      // Bridge preview text (OpenCode plugin)
+      case 'session.preview': {
+        console.log('[ws] session.preview', msg.id?.slice(0,8), msg.text?.slice(0,60));
+        const pe = state.terms.get(msg.id);
+        if (pe && msg.text) {
+          pe.lastPreviewText = msg.text;
+          pe.lastActivityAt = Date.now();
+          const el = document.querySelector(`.group[data-id="${msg.id}"] .session-preview`);
+          if (el) el.textContent = msg.text;
+        }
+        break;
+      }
       // TEMPORARY: stats overlay + working/idle detection
       case 'stats': {
         const el = document.getElementById('stats-overlay');
@@ -80,10 +93,12 @@ function connect() {
           `Silence ${s.silence || '-'}  ·  Burst ${s.burst || '-'}  ·  Chunks ${s.chunks || 0}  ·  AvgChunk ${s.avgChunk || 0}B`,
           `<pre class="text-[10px] text-slate-400 mt-1 whitespace-pre leading-tight">${bufDump}</pre>`,
         ].join('<br>') : '';
-        // Working/idle detection per session
+        // Working/idle detection per session (skip bridge sessions — plugin handles it)
         for (const [sid, st] of Object.entries(msg.stats)) {
           const entry = state.terms.get(sid);
           if (!entry) continue;
+          const cmd = state.cfg.commands.find(c => c.id === entry.commandId);
+          if (cmd?.bridge) continue;
           const net = Math.max(st.rawRateOut || 0, st.rawRateIn || 0);
           const burstUp = (st.burstMs || 0) > (entry.prevBurst || 0) && st.burstMs > 0;
           const userTyping = (st.rawRateIn || 0) > 0 && (st.rawRateIn || 0) < 50;
