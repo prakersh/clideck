@@ -67,7 +67,7 @@ function spawnSession(id, cmd, parts, cwd, name, themeId, commandId, savedToken,
   // Watch for telemetry — if config isn't set up, frontend will prompt
   const bin = cmd.command.split('/').pop().split(' ')[0];
   const preset = PRESETS.find(p => p.command.split('/').pop() === bin);
-  if (preset?.telemetrySetup && cmd.telemetryEnabled) telemetry.watchSession(id);
+  if (preset?.telemetrySetup && !(cmd.telemetryEnabled && cmd.telemetryStatus?.ok)) telemetry.watchSession(id);
   if (preset?.bridge === 'opencode') opencodeBridge.watchSession(id, cwd);
 
   term.onData((data) => {
