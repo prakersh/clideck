@@ -96,6 +96,49 @@ function openIconPicker(triggerEl, cardIdx) {
   };
 }
 
+function telemetryPreset(cmd) {
+  const bin = cmd.command.split('/').pop().split(' ')[0];
+  return (state.presets || []).find(p => p.command.split('/').pop() === bin);
+}
+
+function telemetrySection(c) {
+  const preset = telemetryPreset(c);
+  if (!preset?.telemetryEnv) return '';
+  const isClaude = preset.presetId === 'claude-code';
+  const enabled = isClaude || !!c.telemetryEnabled;
+  const disabled = isClaude ? 'disabled' : '';
+  const dimmed = !enabled ? 'opacity-40' : '';
+  const configPath = preset.telemetryConfigPath || '';
+  const status = c.telemetryStatus;
+  let statusHtml;
+  if (!enabled || !status) {
+    statusHtml = '<span class="text-slate-500">Not configured</span>';
+  } else if (status.ok) {
+    statusHtml = '<span class="text-emerald-400">Successful &#10003;</span>';
+  } else {
+    statusHtml = `<span class="text-red-400">Failed: ${esc(status.error || 'unknown')}</span>`;
+  }
+
+  return `
+    <div class="mt-3 pt-3 border-t border-slate-700/50">
+      <label class="flex items-center gap-2 text-sm text-slate-300 ${isClaude ? '' : 'cursor-pointer'} select-none">
+        <input type="checkbox" ${enabled ? 'checked' : ''} ${disabled} class="agent-telemetry-toggle accent-blue-500" data-preset="${esc(preset.presetId)}">
+        Add telemetry support
+        ${isClaude ? '<span class="text-xs text-slate-500">(built-in)</span>' : ''}
+      </label>
+      <div class="mt-2 space-y-1 text-xs ${dimmed}">
+        <div class="flex items-center gap-2">
+          <span class="text-slate-500">Config file:</span>
+          <span class="text-slate-400 font-mono">${esc(configPath)}</span>
+        </div>
+        <div class="flex items-center gap-2">
+          <span class="text-slate-500">Status:</span>
+          ${statusHtml}
+        </div>
+      </div>
+    </div>`;
+}
+
 function renderAgentList() {
   document.getElementById('agent-list').innerHTML = state.cfg.commands.map((c, i) => `
     <div class="agent-card p-4 bg-slate-800/50 border border-slate-700/50 rounded-lg" data-idx="${i}">
@@ -131,11 +174,8 @@ function renderAgentList() {
             <label class="block text-xs text-slate-500 mb-1">Resume command <span class="text-slate-600">— use {{sessionId}} as placeholder</span></label>
             <input type="text" value="${esc(c.resumeCommand || '')}" class="agent-resume-cmd w-full px-2 py-1.5 text-sm bg-slate-900 border border-slate-700 rounded text-slate-200 placeholder-slate-500 outline-none focus:border-blue-500 transition-colors font-mono" placeholder="e.g. claude --resume {{sessionId}}">
           </div>
-          <div>
-            <label class="block text-xs text-slate-500 mb-1">Session ID pattern <span class="text-slate-600">— regex to capture from terminal output</span></label>
-            <input type="text" value="${esc(c.sessionIdPattern || '')}" class="agent-session-pattern w-full px-2 py-1.5 text-sm bg-slate-900 border border-slate-700 rounded text-slate-200 placeholder-slate-500 outline-none focus:border-blue-500 transition-colors font-mono" placeholder="e.g. Session ID:\\s+([0-9a-f-]{36})">
-          </div>
         </div>
+        ${telemetrySection(c)}
       </div>
     </div>
   `).join('');
@@ -239,6 +279,11 @@ agentList.addEventListener('change', (e) => {
     const card = e.target.closest('.agent-card');
     card.querySelector('.agent-resume-fields').classList.toggle('hidden', !e.target.checked);
   }
+  if (e.target.classList.contains('agent-telemetry-toggle')) {
+    const presetId = e.target.dataset.preset;
+    send({ type: 'telemetry.configure', presetId, enable: e.target.checked });
+    return; // config broadcast from server will re-render
+  }
   saveConfig();
 });
 
@@ -340,7 +385,10 @@ function saveConfig() {
       isAgent: card.querySelector('.agent-is-agent').checked,
       canResume: card.querySelector('.agent-can-resume').checked,
       resumeCommand: card.querySelector('.agent-resume-cmd')?.value.trim() || null,
-      sessionIdPattern: card.querySelector('.agent-session-pattern')?.value.trim() || null,
+      sessionIdPattern: existing.sessionIdPattern || null,
+      outputMarker: existing.outputMarker || null,
+      telemetryEnabled: existing.telemetryEnabled || false,
+      telemetryStatus: existing.telemetryStatus || null,
     };
   });
 
@@ -349,6 +397,8 @@ function saveConfig() {
   state.cfg.confirmClose = document.getElementById('cfg-confirm-close').checked;
   state.cfg.statsOverlay = document.getElementById('cfg-stats-overlay').checked;
   document.getElementById('stats-overlay').classList.toggle('hidden', !state.cfg.statsOverlay);
+  // Preserve fields not managed by this form
+  // (projects, prompts, etc. live on state.cfg and must not be dropped)
   send({ type: 'config.update', config: state.cfg });
 }
 

@@ -1,11 +1,16 @@
 const overlay = document.getElementById('confirm-close');
+const messageEl = document.getElementById('cc-message');
 const confirmBtn = document.getElementById('cc-confirm');
 const cancelBtn = document.getElementById('cc-cancel');
 let pendingResolve = null;
 
-export function confirmClose() {
+const DEFAULT_MSG = 'Close this session? The terminal process will be killed.';
+
+export function confirmClose(message, confirmLabel) {
   return new Promise((resolve) => {
     pendingResolve = resolve;
+    messageEl.textContent = message || DEFAULT_MSG;
+    confirmBtn.textContent = confirmLabel || 'Delete';
     overlay.classList.remove('hidden');
     overlay.classList.add('flex');
   });

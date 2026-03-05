@@ -7,10 +7,12 @@ const { onConnection } = require('./handlers');
 const sessions = require('./sessions');
 
 const transcript = require('./transcript');
+const telemetry = require('./telemetry-receiver');
 
 ensurePtyHelper();
 sessions.loadSessions();
 transcript.init(sessions.broadcast);
+telemetry.init(sessions.broadcast, sessions.getSessions);
 
 const PORT = 4000;
 const MIME = { '.html': 'text/html', '.css': 'text/css', '.js': 'application/javascript', '.png': 'image/png', '.svg': 'image/svg+xml' };
@@ -23,6 +25,28 @@ const ALIASES = {
 const PUBLIC_ROOT = join(__dirname, 'public');
 
 const server = http.createServer((req, res) => {
+  // OTLP telemetry endpoint — receives JSON from CLI agents
+  // Some agents (Gemini) POST to / instead of /v1/logs
+  if (req.method === 'POST' && (req.url === '/v1/logs' || req.url === '/')) {
+    let body = '';
+    req.on('data', chunk => body += chunk);
+    req.on('end', () => {
+      const contentType = req.headers['content-type'] || '';
+      try { req.body = JSON.parse(body); } catch {
+        console.log(`OTLP: failed to parse body (content-type: ${contentType}, ${body.length} bytes)`);
+        req.body = null;
+      }
+      telemetry.handleLogs(req, res);
+    });
+    return;
+  }
+
+  // DEBUG: log any POST (agents might use /v1/traces, /v1/metrics, or other paths)
+  if (req.method === 'POST') {
+    console.log(`OTLP: received POST ${req.url} (not handled)`);
+    return res.writeHead(200).end('{}');
+  }
+
   const filePath = ALIASES[req.url]
     || resolve(PUBLIC_ROOT, (req.url === '/' ? 'index.html' : req.url).replace(/^\//, ''));
   if (!filePath.startsWith(PUBLIC_ROOT) && !ALIASES[req.url]) return res.writeHead(403).end();

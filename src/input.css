@@ -4,8 +4,26 @@
 
 /* Terminal wrappers — need absolute positioning for stacking */
 .term-wrap {
-  @apply absolute inset-1 hidden;
+  @apply absolute inset-1 hidden overflow-hidden;
 }
 .term-wrap.active {
   @apply block;
+}
+
+/* Ensure xterm viewport fills its container */
+.term-wrap .xterm {
+  height: 100%;
+}
+.term-wrap .xterm-viewport {
+  overflow-y: auto !important;
+}
+
+/* Drag & drop */
+.drop-highlight {
+  @apply bg-blue-500/10 ring-1 ring-blue-500/30 rounded;
+}
+
+/* Project chevron rotation — down by default, right when collapsed */
+.project-chevron.collapsed svg {
+  transform: rotate(-90deg);
 }

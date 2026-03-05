@@ -13,9 +13,6 @@
     <button class="rail-btn w-9 h-9 flex items-center justify-center rounded-lg text-slate-200 bg-slate-800 transition-colors" data-panel="chats" title="Sessions">
       <svg class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
     </button>
-    <button class="rail-btn w-9 h-9 flex items-center justify-center rounded-lg text-slate-500 hover:text-slate-300 hover:bg-slate-800/50 transition-colors" data-panel="projects" title="Projects">
-      <svg class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
-    </button>
     <button class="rail-btn w-9 h-9 flex items-center justify-center rounded-lg text-slate-500 hover:text-slate-300 hover:bg-slate-800/50 transition-colors" data-panel="prompts" title="Prompt Library">
       <svg class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/><path d="M16 13H8"/><path d="M16 17H8"/></svg>
     </button>
@@ -30,8 +27,13 @@
     <!-- Chats panel -->
     <div id="panel-chats" class="flex flex-col flex-1 min-h-0">
       <div class="flex items-center justify-between px-3 pt-3 pb-2">
-        <span class="text-xs font-semibold uppercase tracking-wider text-slate-500">Sessions</span>
-        <button class="icon-btn w-7 h-7 flex items-center justify-center rounded-md border border-slate-600 text-slate-400 hover:bg-slate-700 hover:text-slate-200 transition-colors text-sm" id="btn-new" title="New session">+</button>
+        <span class="text-sm font-bold text-slate-200 tracking-tight">Termix</span>
+        <div class="flex items-center gap-1">
+          <button class="icon-btn w-7 h-7 flex items-center justify-center rounded-md border border-slate-600 text-slate-400 hover:bg-slate-700 hover:text-slate-200 transition-colors" id="btn-new-project" title="New project">
+            <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/><path d="M12 11v6M9 14h6"/></svg>
+          </button>
+          <button class="icon-btn w-7 h-7 flex items-center justify-center rounded-md border border-slate-600 text-slate-400 hover:bg-slate-700 hover:text-slate-200 transition-colors text-sm" id="btn-new" title="New session">+</button>
+        </div>
       </div>
       <div class="px-2.5 pb-2.5 flex flex-col gap-2">
         <div class="relative">
@@ -47,15 +49,6 @@
         </div>
       </div>
       <div id="session-list" class="flex-1 overflow-y-auto border-t border-slate-700/50"></div>
-    </div>
-    <!-- Projects panel -->
-    <div id="panel-projects" class="hidden flex-col flex-1 min-h-0">
-      <div class="px-4 py-3 border-b border-slate-700/50">
-        <span class="text-xs font-semibold uppercase tracking-wider text-slate-500">Projects</span>
-      </div>
-      <div class="flex-1 overflow-y-auto flex items-center justify-center">
-        <span class="text-sm text-slate-600">Coming soon</span>
-      </div>
     </div>
     <!-- Prompts panel -->
     <div id="panel-prompts" class="hidden flex-col flex-1 min-h-0">
@@ -89,7 +82,7 @@
   </aside>
 
   <!-- Main -->
-  <main id="main" class="flex-1 flex relative">
+  <main id="main" class="flex-1 flex relative ml-[5px]">
     <div id="terminals" class="absolute inset-0" style="pointer-events:none"></div>
     <!-- TEMPORARY: stats overlay -->
     <div id="stats-overlay" class="absolute top-2 right-3 z-[100] text-[11px] font-mono text-green-400 px-3 py-2 rounded shadow-lg pointer-events-none" style="background:rgba(0,0,0,0.95)"></div>
@@ -146,13 +139,13 @@
 
     </div>
 
-    <!-- Close confirmation -->
+    <!-- Confirmation dialog -->
     <div id="confirm-close" class="absolute inset-0 z-[250] bg-black/60 backdrop-blur-sm hidden items-center justify-center">
       <div class="bg-slate-800 border border-slate-600 rounded-xl shadow-2xl shadow-black/50 w-80 flex flex-col">
-        <div class="px-5 py-4 text-sm">Close this session? The terminal process will be killed.</div>
+        <div id="cc-message" class="px-5 py-4 text-sm">Close this session? The terminal process will be killed.</div>
         <div class="px-4 py-3 border-t border-slate-700 flex justify-end gap-2">
           <button id="cc-cancel" class="px-3 py-1.5 text-xs rounded-md border border-slate-600 text-slate-300 hover:bg-slate-700 transition-colors">Cancel</button>
-          <button id="cc-confirm" class="px-3 py-1.5 text-xs rounded-md bg-red-600 text-white hover:bg-red-500 transition-colors">Close</button>
+          <button id="cc-confirm" class="px-3 py-1.5 text-xs rounded-md bg-red-600 text-white hover:bg-red-500 transition-colors">Delete</button>
         </div>
       </div>
     </div>

@@ -4,7 +4,7 @@ const { join } = require('path');
 const CONFIG_PATH = join(__dirname, 'config.json');
 
 const DEFAULTS = {
-  defaultPath: process.env.HOME || '/tmp',
+  defaultPath: join(process.env.HOME || '/tmp', 'Documents'),
   commands: [
     {
       id: '1', label: 'Shell', icon: 'terminal', command: '/bin/zsh', enabled: true,
@@ -14,6 +14,7 @@ const DEFAULTS = {
   confirmClose: true,
   defaultTheme: 'default',
   prompts: [],
+  projects: [],
 };
 
 function deepCopy(obj) { return JSON.parse(JSON.stringify(obj)); }
@@ -45,6 +46,10 @@ function migrate(cfg) {
     if (cmd.resumeCommand === undefined)    cmd.resumeCommand = preset?.resumeCommand || null;
     if (cmd.sessionIdPattern === undefined) cmd.sessionIdPattern = preset?.sessionIdPattern || null;
     if (cmd.outputMarker === undefined)     cmd.outputMarker = preset?.outputMarker || null;
+    // Claude Code telemetry is built-in, always on
+    if (preset?.presetId === 'claude-code') cmd.telemetryEnabled = true;
+    else if (cmd.telemetryEnabled === undefined) cmd.telemetryEnabled = false;
+    if (cmd.telemetryStatus === undefined)  cmd.telemetryStatus = null;
   }
   // Auto-add any shipped presets not yet in the commands list
   for (const preset of PRESETS) {
@@ -59,6 +64,7 @@ function migrate(cfg) {
       });
     }
   }
+  if (!cfg.projects) cfg.projects = [];
   return cfg;
 }
 

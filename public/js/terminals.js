@@ -48,18 +48,45 @@ function openMenu(sessionId, anchorEl) {
   menu.style.top = (rect.bottom + 4) + 'px';
   menu.style.right = (window.innerWidth - rect.right) + 'px';
 
-  const items = [
-    { label: 'Theme', icon: `<svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 2a7 7 0 0 0 0 20 4 4 0 0 1 0-8 4 4 0 0 0 0-8"/></svg>`, action: 'theme' },
-    { label: 'Delete', icon: `<svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/></svg>`, action: 'delete', cls: 'text-red-400' },
-  ];
+  const entry = state.terms.get(sessionId);
+  const projects = state.cfg.projects || [];
 
-  menu.innerHTML = items.map(i =>
-    `<button class="menu-action flex items-center gap-2.5 w-full px-3 py-2 text-sm ${i.cls || 'text-slate-300'} hover:bg-slate-700 transition-colors text-left" data-action="${i.action}">
-      <span class="flex-shrink-0 ${i.cls || 'text-slate-400'}">${i.icon}</span>
-      ${i.label}
-    </button>`
-  ).join('');
+  let html = '';
 
+  // Project submenu items
+  if (projects.length) {
+    html += `<div class="px-3 py-1 text-[10px] font-semibold uppercase tracking-wider text-slate-600">Move to project</div>`;
+    for (const p of projects) {
+      const active = entry?.projectId === p.id;
+      html += `<button class="menu-action flex items-center gap-2 w-full px-3 py-1.5 text-sm ${active ? 'text-blue-400' : 'text-slate-300'} hover:bg-slate-700 transition-colors text-left" data-action="project" data-project-id="${p.id}">
+        <span class="w-2 h-2 rounded-full flex-shrink-0" style="background:${projectColor(p)}"></span>
+        ${esc(p.name)}${active ? ' ✓' : ''}
+      </button>`;
+    }
+    if (entry?.projectId) {
+      html += `<button class="menu-action flex items-center gap-2 w-full px-3 py-1.5 text-sm text-slate-500 hover:bg-slate-700 transition-colors text-left" data-action="unproject">
+        <span class="w-2 h-2 rounded-full flex-shrink-0 border border-slate-600"></span>
+        Remove from project
+      </button>`;
+    }
+    html += `<div class="border-t border-slate-700/50 my-1"></div>`;
+  }
+
+  html += `
+    <button class="menu-action flex items-center gap-2.5 w-full px-3 py-2 text-sm text-slate-300 hover:bg-slate-700 transition-colors text-left" data-action="rename">
+      <span class="flex-shrink-0 text-slate-400"><svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5"><path d="M17 3a2.85 2.85 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/></svg></span>
+      Rename
+    </button>
+    <button class="menu-action flex items-center gap-2.5 w-full px-3 py-2 text-sm text-slate-300 hover:bg-slate-700 transition-colors text-left" data-action="theme">
+      <span class="flex-shrink-0 text-slate-400"><svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 2a7 7 0 0 0 0 20 4 4 0 0 1 0-8 4 4 0 0 0 0-8"/></svg></span>
+      Theme
+    </button>
+    <button class="menu-action flex items-center gap-2.5 w-full px-3 py-2 text-sm text-red-400 hover:bg-slate-700 transition-colors text-left" data-action="delete">
+      <span class="flex-shrink-0 text-red-400"><svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/></svg></span>
+      Delete
+    </button>`;
+
+  menu.innerHTML = html;
   document.body.appendChild(menu);
 
   const onClick = (e) => {
@@ -67,13 +94,19 @@ function openMenu(sessionId, anchorEl) {
     if (!btn) return;
     closeMenu();
     const action = btn.dataset.action;
-    if (action === 'delete') {
+    if (action === 'rename') {
+      startRename(sessionId);
+    } else if (action === 'delete') {
       document.getElementById('session-list').dispatchEvent(
         new CustomEvent('session-delete', { detail: { id: sessionId } })
       );
     } else if (action === 'theme') {
       const iconEl = document.querySelector(`.group[data-id="${sessionId}"] .session-icon`);
       if (iconEl) openThemePicker(sessionId, iconEl);
+    } else if (action === 'project') {
+      setSessionProject(sessionId, btn.dataset.projectId);
+    } else if (action === 'unproject') {
+      setSessionProject(sessionId, null);
     }
   };
   const onOutside = (e) => {
@@ -143,35 +176,33 @@ function closeThemePicker() {
 
 // --- Terminal management ---
 
-export function addTerminal(id, name, themeId, commandId) {
+export function addTerminal(id, name, themeId, commandId, projectId) {
   if (state.terms.has(id)) return;
   themeId = themeId || state.cfg.defaultTheme || 'default';
 
   const item = document.createElement('div');
-  item.className = 'group flex items-center gap-2 px-2.5 py-2 cursor-pointer hover:bg-slate-800/50 transition-colors';
+  item.className = 'group flex items-center gap-2 px-2.5 py-2 cursor-pointer hover:bg-slate-800/50 transition-colors select-none';
   item.dataset.id = id;
   item.innerHTML = `
-    <div class="session-icon w-8 h-8 rounded-full bg-slate-800 flex items-center justify-center flex-shrink-0 overflow-hidden">
+    <div class="session-icon w-8 h-8 rounded-full bg-slate-800 flex items-center justify-center flex-shrink-0 overflow-hidden pointer-events-none">
       ${iconHtml(commandId)}
     </div>
-    <div class="flex-1 min-w-0">
+    <div class="flex-1 min-w-0 pointer-events-none">
       <div class="flex items-baseline gap-2">
-        <span class="name flex-1 font-semibold text-[13px] text-slate-200 truncate">${esc(name)}</span>
+        <span class="name flex-1 font-semibold text-[13px] text-slate-200 truncate pointer-events-auto cursor-default">${esc(name)}</span>
         <span class="session-time text-[11px] text-slate-500 flex-shrink-0">${formatTime(Date.now())}</span>
       </div>
       <div class="flex items-center gap-1 mt-0.5">
         <span class="session-status text-emerald-500 flex-shrink-0 leading-none" style="transition:opacity 0.2s">${SPINNER_SVG}</span>
         <span class="session-preview flex-1 text-xs text-slate-500 truncate"></span>
         <span class="unread-dot hidden w-2 h-2 rounded-full bg-blue-500 flex-shrink-0"></span>
-        <button class="menu-btn opacity-0 group-hover:opacity-100 text-slate-500 hover:text-slate-300 flex-shrink-0 transition-opacity" title="Menu">
+        <button class="menu-btn opacity-0 group-hover:opacity-100 text-slate-500 hover:text-slate-300 flex-shrink-0 transition-opacity pointer-events-auto" title="Menu">
           <svg class="w-[18px] h-[18px]" fill="none" viewBox="0 0 20 20"><path d="M10 14l-4-4h8l-4 4z" fill="currentColor"/></svg>
         </button>
       </div>
     </div>`;
-  const sessionList = document.getElementById('session-list');
-  const resumableSection = document.getElementById('resumable-section');
-  if (resumableSection) sessionList.insertBefore(item, resumableSection);
-  else sessionList.appendChild(item);
+
+  document.getElementById('session-list').appendChild(item);
 
   const el = document.createElement('div');
   el.className = 'term-wrap';
@@ -188,9 +219,12 @@ export function addTerminal(id, name, themeId, commandId) {
   term.loadAddon(fit);
   term.onData(data => send({ type: 'input', id, data }));
 
-  state.terms.set(id, { term, fit, el, themeId, commandId, working: true, lastActivityAt: Date.now(), unread: false, lastPreviewText: '', searchText: '', opened: false });
+  term.open(el);
+  state.terms.set(id, { term, fit, el, themeId, commandId, projectId: projectId || null, working: true, lastActivityAt: Date.now(), unread: false, lastPreviewText: '', searchText: '', opened: true });
   document.getElementById('empty').style.display = 'none';
   document.getElementById('terminals').style.pointerEvents = '';
+
+  regroupSessions();
 }
 
 export function removeTerminal(id) {
@@ -210,6 +244,7 @@ export function removeTerminal(id) {
       document.getElementById('terminals').style.pointerEvents = 'none';
     }
   }
+  regroupSessions();
 }
 
 export function select(id) {
@@ -225,10 +260,6 @@ export function select(id) {
   const entry = state.terms.get(id);
   if (entry) {
     entry.el.classList.add('active');
-    if (!entry.opened) {
-      entry.term.open(entry.el);
-      entry.opened = true;
-    }
     if (entry.unread) {
       entry.unread = false;
       const dot = document.querySelector(`.group[data-id="${id}"] .unread-dot`);
@@ -238,8 +269,10 @@ export function select(id) {
     }
     requestAnimationFrame(() => requestAnimationFrame(() => {
       entry.fit.fit();
+      entry.term.scrollToBottom();
       send({ type: 'resize', id, cols: entry.term.cols, rows: entry.term.rows });
-      entry.term.focus();
+      // Don't steal focus from an active inline rename
+      if (!document.querySelector('[contenteditable="true"]')) entry.term.focus();
     }));
   }
   state.active = id;
@@ -364,6 +397,9 @@ export function startRename(id) {
   if (!el || el.contentEditable === 'true') return;
   const original = el.textContent;
   el.contentEditable = 'true';
+  el.style.userSelect = 'text';
+  el.style.webkitUserSelect = 'text';
+  el.classList.add('cursor-text');
   el.focus();
   document.getSelection().selectAllChildren(el);
 
@@ -371,6 +407,9 @@ export function startRename(id) {
   const finish = () => {
     el.removeEventListener('keydown', onKey);
     el.contentEditable = 'false';
+    el.style.userSelect = '';
+    el.style.webkitUserSelect = '';
+    el.classList.remove('cursor-text');
     if (cancelled) el.textContent = original;
     else {
       const name = el.textContent.trim() || original;
@@ -384,6 +423,139 @@ export function startRename(id) {
   };
   el.addEventListener('blur', finish, { once: true });
   el.addEventListener('keydown', onKey);
+}
+
+export function startProjectRename(projectId) {
+  const el = document.querySelector(`.project-group[data-project-id="${projectId}"] .project-name`);
+  if (!el || el.contentEditable === 'true') return;
+  const original = el.textContent;
+  el.contentEditable = 'true';
+  el.classList.add('text-slate-200');
+  el.focus();
+  document.getSelection().selectAllChildren(el);
+
+  let cancelled = false;
+  const finish = () => {
+    el.removeEventListener('keydown', onKey);
+    el.contentEditable = 'false';
+    el.classList.remove('text-slate-200');
+    if (cancelled) { el.textContent = original; return; }
+    const name = el.textContent.trim() || original;
+    el.textContent = name;
+    const proj = (state.cfg.projects || []).find(p => p.id === projectId);
+    if (proj) {
+      proj.name = name;
+      send({ type: 'config.update', config: state.cfg });
+    }
+  };
+  const onKey = (e) => {
+    if (e.key === 'Enter') { e.preventDefault(); el.blur(); }
+    if (e.key === 'Escape') { cancelled = true; el.blur(); }
+  };
+  el.addEventListener('blur', finish, { once: true });
+  el.addEventListener('keydown', onKey);
+}
+
+// --- Project grouping ---
+
+const CHEVRON_SVG = `<svg class="w-3 h-3 transition-transform" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5"><path d="M6 9l6 6 6-6"/></svg>`;
+
+const PROJECT_COLORS = ['#3b82f6', '#8b5cf6', '#ec4899', '#f59e0b', '#10b981', '#ef4444', '#06b6d4', '#84cc16'];
+
+function projectColor(project) {
+  return project.color || PROJECT_COLORS[0];
+}
+
+function buildSessionRow(id) {
+  return document.querySelector(`.group[data-id="${id}"]`);
+}
+
+export function regroupSessions() {
+  const list = document.getElementById('session-list');
+  const projects = state.cfg.projects || [];
+  const resumableSection = document.getElementById('resumable-section');
+
+  // Detach all session rows (preserve DOM nodes)
+  const rows = new Map();
+  for (const [id] of state.terms) {
+    const row = document.querySelector(`.group[data-id="${id}"]`);
+    if (row) { row.remove(); rows.set(id, row); }
+  }
+  // Remove old project headers
+  list.querySelectorAll('.project-group').forEach(el => el.remove());
+
+  // Render project groups
+  for (const proj of projects) {
+    const header = document.createElement('div');
+    header.className = 'project-group';
+    header.dataset.projectId = proj.id;
+
+    const collapsed = proj.collapsed;
+    header.innerHTML = `
+      <div class="group project-header flex items-center gap-1.5 px-2.5 py-1.5 cursor-pointer hover:bg-slate-800/30 transition-colors select-none" data-project-id="${proj.id}">
+        <span class="project-chevron ${collapsed ? 'collapsed' : ''} text-slate-500">${CHEVRON_SVG}</span>
+        <span class="w-2 h-2 rounded-full flex-shrink-0" style="background:${projectColor(proj)}"></span>
+        <span class="project-name flex-1 text-[11px] font-semibold uppercase tracking-wider text-slate-500 truncate">${esc(proj.name)}</span>
+        <span class="project-count text-[10px] text-slate-600">0</span>
+        <button class="project-menu-btn opacity-0 group-hover:opacity-100 text-slate-600 hover:text-slate-400 flex-shrink-0 transition-opacity p-0.5" title="Project menu">
+          <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 20 20"><circle cx="10" cy="4" r="1.5" fill="currentColor"/><circle cx="10" cy="10" r="1.5" fill="currentColor"/><circle cx="10" cy="16" r="1.5" fill="currentColor"/></svg>
+        </button>
+      </div>
+      <div class="project-sessions ${collapsed ? 'hidden' : ''}"></div>`;
+
+    if (resumableSection) list.insertBefore(header, resumableSection);
+    else list.appendChild(header);
+  }
+
+  // Place sessions into their groups or ungrouped at top
+  const ungrouped = [];
+  for (const [id, entry] of state.terms) {
+    const row = rows.get(id);
+    if (!row) continue;
+    if (entry.projectId) {
+      const container = list.querySelector(`.project-group[data-project-id="${entry.projectId}"] .project-sessions`);
+      if (container) { container.appendChild(row); continue; }
+    }
+    ungrouped.push(row);
+  }
+
+  // Insert ungrouped sessions before first project group (or before resumable)
+  const firstGroup = list.querySelector('.project-group');
+  const insertBefore = firstGroup || resumableSection || null;
+  for (const row of ungrouped) {
+    list.insertBefore(row, insertBefore);
+  }
+
+  // Update counts
+  for (const proj of projects) {
+    const container = list.querySelector(`.project-group[data-project-id="${proj.id}"] .project-sessions`);
+    const countEl = list.querySelector(`.project-group[data-project-id="${proj.id}"] .project-count`);
+    if (container && countEl) countEl.textContent = container.children.length;
+  }
+
+  applyFilter();
+}
+
+export function toggleProjectCollapse(projectId) {
+  const proj = (state.cfg.projects || []).find(p => p.id === projectId);
+  if (!proj) return;
+  proj.collapsed = !proj.collapsed;
+  send({ type: 'config.update', config: state.cfg });
+
+  const group = document.querySelector(`.project-group[data-project-id="${projectId}"]`);
+  if (!group) return;
+  const sessions = group.querySelector('.project-sessions');
+  const chevron = group.querySelector('.project-chevron');
+  if (sessions) sessions.classList.toggle('hidden', proj.collapsed);
+  if (chevron) chevron.classList.toggle('collapsed', proj.collapsed);
+}
+
+export function setSessionProject(id, projectId) {
+  const entry = state.terms.get(id);
+  if (!entry) return;
+  entry.projectId = projectId;
+  send({ type: 'session.setProject', id, projectId });
+  regroupSessions();
 }
 
 // --- Resumable sessions ---
@@ -450,6 +622,22 @@ export function applyFilter() {
     const matchQuery = !q || name.includes(q) || (entry.searchText || '').toLowerCase().includes(q);
     el.style.display = matchTab && matchQuery ? '' : 'none';
   }
+  // Show/hide project groups
+  // - With active search: show if project name matches or has visible children
+  // - No search + All tab: always show (empty projects should be visible)
+  // - No search + Unread tab: only show if has visible children
+  for (const group of document.querySelectorAll('.project-group')) {
+    const sessions = group.querySelector('.project-sessions');
+    const hasVisible = sessions && [...sessions.children].some(c => c.style.display !== 'none');
+    let show;
+    if (q) {
+      const projName = group.querySelector('.project-name')?.textContent.toLowerCase() || '';
+      show = projName.includes(q) || hasVisible;
+    } else {
+      show = tab === 'all' || hasVisible;
+    }
+    group.style.display = show ? '' : 'none';
+  }
   // Resumable: hidden in Unread tab, filtered by name otherwise
   const section = document.getElementById('resumable-section');
   if (!section) return;
@@ -462,7 +650,7 @@ export function applyFilter() {
     row.style.display = show ? '' : 'none';
     if (show) anyVisible = true;
   }
-  section.querySelector('.resumable-header').style.display = anyVisible ? '' : 'none';
+  section.querySelector('.resumable-header')?.style && (section.querySelector('.resumable-header').style.display = anyVisible ? '' : 'none');
 }
 
 export function setTab(tab) {
@@ -494,4 +682,4 @@ setInterval(() => {
   }
 }, 60000);
 
-export { openMenu, closeMenu, setStatus };
+export { openMenu, closeMenu, setStatus, PROJECT_COLORS };

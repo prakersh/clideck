@@ -8,7 +8,15 @@
     "canResume": true,
     "resumeCommand": "claude --resume {{sessionId}}",
     "sessionIdPattern": "Session ID:\\s+([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})",
-    "outputMarker": "⏺"
+    "outputMarker": "\u23fa",
+    "telemetryConfigPath": "Built-in (no configuration needed)",
+    "telemetryEnv": {
+      "CLAUDE_CODE_ENABLE_TELEMETRY": "1",
+      "OTEL_LOGS_EXPORTER": "otlp",
+      "OTEL_EXPORTER_OTLP_PROTOCOL": "http/json",
+      "OTEL_EXPORTER_OTLP_ENDPOINT": "http://localhost:{{port}}",
+      "OTEL_LOGS_EXPORT_INTERVAL": "2000"
+    }
   },
   {
     "presetId": "codex",
@@ -19,7 +27,18 @@
     "canResume": true,
     "resumeCommand": "codex resume {{sessionId}}",
     "sessionIdPattern": "Session:\\s+([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})",
-    "outputMarker": "•"
+    "outputMarker": "\u2022",
+    "telemetryConfigPath": "~/.codex/config.toml",
+    "telemetryEnv": {
+      "OTEL_LOGS_EXPORTER": "otlp",
+      "OTEL_EXPORTER_OTLP_PROTOCOL": "http/json",
+      "OTEL_EXPORTER_OTLP_ENDPOINT": "http://localhost:{{port}}",
+      "OTEL_LOGS_EXPORT_INTERVAL": "2000"
+    },
+    "telemetrySetup": "For best experience, add to ~/.codex/config.toml:\n\n[otel]\nexporter = { otlp-http = { endpoint = \"http://localhost:{{port}}/v1/logs\", protocol = \"json\" } }",
+    "telemetryAutoSetup": {
+      "label": "Configure automatically"
+    }
   },
   {
     "presetId": "gemini-cli",
@@ -30,7 +49,18 @@
     "canResume": true,
     "resumeCommand": "gemini --resume {{sessionId}}",
     "sessionIdPattern": "Session ID:\\s+([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})",
-    "outputMarker": "✦"
+    "outputMarker": "\u2726",
+    "telemetryConfigPath": "~/.gemini/settings.json",
+    "telemetryEnv": {
+      "GEMINI_TELEMETRY_ENABLED": "true",
+      "GEMINI_TELEMETRY_TARGET": "local",
+      "GEMINI_TELEMETRY_OTLP_ENDPOINT": "http://localhost:{{port}}",
+      "GEMINI_TELEMETRY_OTLP_PROTOCOL": "http"
+    },
+    "telemetrySetup": "For best experience, add to ~/.gemini/settings.json:\n\n{\n  \"telemetry\": {\n    \"enabled\": true,\n    \"target\": \"local\",\n    \"otlpEndpoint\": \"http://localhost:{{port}}/v1/logs\",\n    \"otlpProtocol\": \"http\",\n    \"logPrompts\": true\n  }\n}",
+    "telemetryAutoSetup": {
+      "label": "Configure automatically"
+    }
   },
   {
     "presetId": "opencode",
@@ -41,7 +71,7 @@
     "canResume": true,
     "resumeCommand": "opencode --session {{sessionId}}",
     "sessionIdPattern": "(ses_[a-zA-Z0-9]{10,})",
-    "outputMarker": "│"
+    "outputMarker": "\u2502"
   },
   {
     "presetId": "shell",

@@ -41,9 +41,10 @@ Current code structure
   - `themes.js` — 10 built-in terminal theme presets
   - `stats.js` — TEMPORARY process stats (CPU, memory, network per session via process group)
   - `transcript.js` — per-session JSONL transcript store with search cache
+  - `telemetry-receiver.js` — OTLP HTTP/JSON log receiver for session ID capture and telemetry setup detection
   - `agent-presets.json` — CLI agent definitions with outputMarker field
 - Frontend (ES modules in `public/js/`):
-  - `app.js` — app bootstrap, WebSocket message routing, stats overlay + working/idle detection
+  - `app.js` — app bootstrap, WebSocket message routing, stats overlay + working/idle detection, telemetry setup toast
   - `state.js` — shared client state (ws, terms, cfg, themes, presets, resumable)
   - `terminals.js` — terminal add/remove/select/rename, session context menu, buffer reading for agent output
   - `settings.js` — settings panel rendering, custom theme dropdown, save logic
@@ -94,6 +95,7 @@ Done
   - Idle: output rate < 800B/s + burst not increasing, sustained ~1.5s
   - Per-session process stats (CPU, memory, network) via process group tracking
   - Stats overlay toggle in Settings > Appearance > Monitoring
+  - Telemetry receiver is not driving working/idle; stats remain the source of truth
 - Agent output detection via `outputMarker` field per agent preset:
   - Each agent declares its output line marker (⏺ Claude, • Codex, ✦ Gemini, │ OpenCode)
   - Buffer reader scans xterm.js screen bottom-up for the marker to extract last agent message
@@ -118,6 +120,14 @@ Done
   - Auto-switches to All tab when selecting unread session (prevents vanishing row)
   - Unread count badge on filter tab
 - Terminal fit fix (double requestAnimationFrame for reliable layout after display change)
+- Telemetry integration and setup detection:
+  - OTLP HTTP/JSON receiver mounted at `POST /v1/logs`
+  - Telemetry env injection for supported agent presets so local sessions can emit logs to Termix
+  - Session ID capture from telemetry log record attributes for resume support
+  - 4s telemetry watch for supported agents; if no telemetry arrives, frontend shows setup guidance
+  - Polished telemetry setup toast with manual config instructions and dismiss flow
+  - Codex auto-setup path from backend (`telemetry.autosetup`) with live-session validation
+  - Successful auto-setup offers restart action so the new session launches with telemetry enabled
 
 Not done
 - Resume UI (show resumable sessions in sidebar, resume button)
@@ -162,6 +172,10 @@ Next Phase Priorities
 
 7. Remove Temporary Code
 - Remove stats.js, stats overlay, debug buffer dump after working/idle detection is stable.
+
+Architecture Rules
+- Telemetry is the primary path for session ID capture (resume). Regex-based PTY output matching is a fallback only for agents that don't support telemetry.
+- Stats-based heuristics remain the source of truth for working/idle detection. Telemetry receiver does NOT drive working/idle.
 
 Design Notes
 - Settings UI uses Tailwind CSS with custom styled dropdowns (no native selects).

@@ -4,8 +4,11 @@ const { join } = require('path');
 const { parseCommand, resolveValidDir } = require('./utils');
 const stats = require('./stats'); // TEMPORARY
 const transcript = require('./transcript');
+const telemetry = require('./telemetry-receiver');
 
 const MAX_BUFFER = 200 * 1024;
+const PORT = 4000;
+const PRESETS = JSON.parse(require('fs').readFileSync(join(__dirname, 'agent-presets.json'), 'utf8'));
 const SAVED_PATH = join(__dirname, 'sessions.json');
 const sessions = new Map();
 const clients = new Set();
@@ -20,19 +23,40 @@ function broadcast(msg) {
 
 // --- Spawn a PTY and wire up a session ---
 
-function spawnSession(id, cmd, parts, cwd, name, themeId, commandId) {
+function buildTelemetryEnv(id, cmd) {
+  const bin = cmd.command.split('/').pop().split(' ')[0];
+  const preset = PRESETS.find(p => p.command.split('/').pop() === bin);
+  if (!preset?.telemetryEnv || !cmd.telemetryEnabled) return {};
+  const env = {};
+  for (const [k, v] of Object.entries(preset.telemetryEnv)) {
+    env[k] = v.replace('{{port}}', String(PORT));
+  }
+  // Tag events with our session ID so the receiver can map them
+  const existing = process.env.OTEL_RESOURCE_ATTRIBUTES || '';
+  env.OTEL_RESOURCE_ATTRIBUTES = (existing ? existing + ',' : '') + `termix.session_id=${id}`;
+  return env;
+}
+
+function spawnSession(id, cmd, parts, cwd, name, themeId, commandId, savedToken, projectId) {
+  const telemetryEnv = buildTelemetryEnv(id, cmd);
   let term;
   try {
     term = pty.spawn(parts[0], parts.slice(1), {
-      name: 'xterm-256color', cols: 80, rows: 24, cwd, env: process.env,
+      name: 'xterm-256color', cols: 80, rows: 24, cwd,
+      env: { ...process.env, ...telemetryEnv },
     });
   } catch (e) {
     return e;
   }
 
   const sessionIdRe = cmd.sessionIdPattern ? new RegExp(cmd.sessionIdPattern) : null;
-  const session = { name, themeId, commandId, cwd, pty: term, buffer: '', sessionToken: null };
+  const session = { name, themeId, commandId, cwd, pty: term, buffer: '', sessionToken: savedToken || null, projectId: projectId || null };
   sessions.set(id, session);
+
+  // Watch for telemetry — if config isn't set up, frontend will prompt
+  const bin = cmd.command.split('/').pop().split(' ')[0];
+  const preset = PRESETS.find(p => p.command.split('/').pop() === bin);
+  if (preset?.telemetrySetup && cmd.telemetryEnabled) telemetry.watchSession(id);
 
   term.onData((data) => {
     session.buffer += data;
@@ -49,6 +73,7 @@ function spawnSession(id, cmd, parts, cwd, name, themeId, commandId) {
 
   term.onExit(() => {
     stats.clear(id); // TEMPORARY
+    telemetry.clear(id);
     transcript.clear(id);
     sessions.delete(id);
     broadcast({ type: 'closed', id });
@@ -69,14 +94,15 @@ function create(msg, ws, cfg) {
   const themeId = msg.themeId || cfg.defaultTheme || 'default';
   const name = msg.name || cmd.label;
 
-  const err = spawnSession(id, cmd, parts, cwd, name, themeId, cmd.id);
+  const projectId = msg.projectId || null;
+  const err = spawnSession(id, cmd, parts, cwd, name, themeId, cmd.id, null, projectId);
   if (err) {
     console.error('Failed to spawn pty:', err.message);
     ws.send(JSON.stringify({ type: 'error', message: err.message }));
     return;
   }
 
-  broadcast({ type: 'created', id, name, themeId, commandId: cmd.id });
+  broadcast({ type: 'created', id, name, themeId, commandId: cmd.id, projectId });
 }
 
 // --- Resume a persisted session ---
@@ -108,7 +134,7 @@ function resume(msg, ws, cfg) {
   const cwd = resolveValidDir(saved.cwd || cfg.defaultPath);
   const id = saved.id;
 
-  const err = spawnSession(id, cmd, parts, cwd, saved.name, saved.themeId || saved.profileId || 'default', saved.commandId);
+  const err = spawnSession(id, cmd, parts, cwd, saved.name, saved.themeId || saved.profileId || 'default', saved.commandId, saved.sessionToken, saved.projectId);
   if (err) {
     console.error('Failed to resume pty:', err.message);
     ws.send(JSON.stringify({ type: 'error', message: err.message }));
@@ -119,7 +145,7 @@ function resume(msg, ws, cfg) {
   resumable = resumable.filter(s => s.id !== id);
   broadcast({ type: 'sessions.resumable', list: resumable });
 
-  broadcast({ type: 'created', id, name: saved.name, themeId: saved.themeId || saved.profileId || 'default', commandId: saved.commandId, resumed: true });
+  broadcast({ type: 'created', id, name: saved.name, themeId: saved.themeId || saved.profileId || 'default', commandId: saved.commandId, projectId: saved.projectId || null, resumed: true });
 }
 
 // --- Standard session operations ---
@@ -144,13 +170,23 @@ function setTheme(id, themeId) {
 
 function close(msg) {
   const s = sessions.get(msg.id);
-  if (s) { s.pty.kill(); transcript.clear(msg.id); sessions.delete(msg.id); broadcast({ type: 'closed', id: msg.id }); }
+  if (s) { s.pty.kill(); telemetry.clear(msg.id); transcript.clear(msg.id); sessions.delete(msg.id); broadcast({ type: 'closed', id: msg.id }); }
+  // Also remove from resumable list if present
+  const before = resumable.length;
+  resumable = resumable.filter(r => r.id !== msg.id);
+  if (resumable.length !== before) broadcast({ type: 'sessions.resumable', list: resumable });
 }
 
 function list() {
   return [...sessions].map(([id, s]) => ({
-    id, name: s.name, themeId: s.themeId, commandId: s.commandId,
+    id, name: s.name, themeId: s.themeId, commandId: s.commandId, projectId: s.projectId,
   }));
+}
+
+function setProject(id, projectId) {
+  const s = sessions.get(id);
+  if (s) { s.projectId = projectId || null; return true; }
+  return false;
 }
 
 function getResumable() { return resumable; }
@@ -175,7 +211,7 @@ function saveSessions(cfg) {
     })
     .map(([id, s]) => ({
       id, name: s.name, commandId: s.commandId, cwd: s.cwd,
-      themeId: s.themeId, sessionToken: s.sessionToken,
+      themeId: s.themeId, sessionToken: s.sessionToken, projectId: s.projectId,
       savedAt: new Date().toISOString(),
     }));
 
@@ -205,7 +241,7 @@ function shutdown(cfg) {
 
 module.exports = {
   clients, broadcast, getSessions: () => sessions,
-  create, resume, input, resize, rename, setTheme, close,
+  create, resume, input, resize, rename, setTheme, setProject, close,
   list, getResumable, sendBuffers,
   loadSessions, shutdown,
 };
