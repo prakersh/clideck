@@ -454,8 +454,7 @@ function setStatus(id, working) {
   if (wasWorking && !working) {
     const workDuration = (Date.now() - (entry.workStartedAt || 0)) / 1000;
     const minWork = state.cfg.notifyMinWork || 20;
-    const isViewing = document.hasFocus() && state.active === id;
-    if (state.cfg.notifyIdle && !isViewing && workDuration >= minWork
+    if (state.cfg.notifyIdle && !document.hasFocus() && workDuration >= minWork
         && 'Notification' in window && Notification.permission === 'granted') {
       const sessionName = document.querySelector(`.group[data-id="${id}"] .name`)?.textContent || 'Session';
       const proj = state.cfg.projects?.find(p => p.id === entry.projectId);
