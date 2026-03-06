@@ -50,7 +50,7 @@ const server = http.createServer((req, res) => {
     let body = '';
     req.on('data', chunk => { body += chunk; if (body.length > 1e5) req.destroy(); });
     req.on('end', () => {
-      try { require('./opencode-bridge').handleEvent(JSON.parse(body)); } catch {}
+      try { require('./opencode-bridge').handleEvent(JSON.parse(body)); } catch (e) { console.error('[opencode-bridge] handleEvent error:', e); }
       res.writeHead(200).end('{}');
     });
     return;

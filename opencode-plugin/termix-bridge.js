@@ -16,7 +16,7 @@ export const TermixBridge = async () => {
   return {
     event: async ({ event }) => {
       const t = event.type;
-      if (t.startsWith("session.") || t.startsWith("message.part.updated")) {
+      if (t.startsWith("session.") || t.startsWith("message.")) {
         post({ event: t, ...event.properties });
       }
     },

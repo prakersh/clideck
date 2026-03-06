@@ -37,26 +37,58 @@ function findUnclaimed(directory) {
 
 // Extract OpenCode session ID from any event shape
 function extractOcSid(p) {
-  return p.sessionID || p.info?.id || p.part?.sessionID;
+  return p.sessionID
+    || p.sessionId
+    || p.info?.id
+    || p.info?.sessionID
+    || p.info?.sessionId
+    || p.part?.sessionID
+    || p.part?.sessionId
+    || p.message?.sessionID
+    || p.message?.sessionId
+    || p.session?.id
+    || null;
+}
+
+function extractDirectory(p) {
+  return p.info?.directory || p.directory || p.info?.path?.cwd || p.path?.cwd || null;
+}
+
+function claim(termixId, ocSid) {
+  const w = watchers.get(termixId);
+  if (!w) return;
+  w.opencodeSessionId = ocSid;
+  const sess = sessionsFn?.()?.get(termixId);
+  if (sess && !sess.sessionToken) sess.sessionToken = ocSid;
+}
+
+function unclaimedIds() {
+  const ids = [];
+  for (const [termixId, w] of watchers) {
+    if (!w.opencodeSessionId) ids.push(termixId);
+  }
+  return ids;
 }
 
 function handleEvent(payload) {
   if (!payload || !payload.event) return;
 
   const ocSid = extractOcSid(payload);
-  if (!ocSid) return;
-
-  let termixId = findByOcId(ocSid);
+  let termixId = ocSid ? findByOcId(ocSid) : null;
 
   // Claim unclaimed watcher on session.created or session.updated
-  if (!termixId && (payload.event === 'session.created' || payload.event === 'session.updated')) {
-    termixId = findUnclaimed(payload.info?.directory);
-    if (termixId) {
-      const w = watchers.get(termixId);
-      w.opencodeSessionId = ocSid;
-      const sess = sessionsFn?.()?.get(termixId);
-      if (sess && !sess.sessionToken) sess.sessionToken = ocSid;
+  if (!termixId && ocSid && (payload.event === 'session.created' || payload.event === 'session.updated')) {
+    termixId = findUnclaimed(extractDirectory(payload));
+    if (termixId) claim(termixId, ocSid);
+  }
 
+  // Fallback: if there's exactly one unclaimed OpenCode watcher, attach first seen session ID.
+  // This recovers when session.created/session.updated isn't delivered in-order.
+  if (!termixId && ocSid) {
+    const unclaimed = unclaimedIds();
+    if (unclaimed.length === 1) {
+      termixId = unclaimed[0];
+      claim(termixId, ocSid);
     }
   }
 
@@ -75,8 +107,28 @@ function handleEvent(payload) {
   }
 
   // message.part.updated with type=text → preview
-  if (payload.event === 'message.part.updated' && payload.part?.type === 'text' && payload.part.text) {
-    broadcastFn?.({ type: 'session.preview', id: termixId, text: payload.part.text.slice(0, 200) });
+  if (payload.event === 'message.part.updated') {
+    const part = payload.part || {};
+    const text = typeof part.text === 'string'
+      ? part.text
+      : (typeof payload.delta === 'string' ? payload.delta : '');
+    const isTextual = part.type === 'text' || part.type === 'reasoning' || !!text;
+    if (isTextual && text) {
+      broadcastFn?.({ type: 'session.preview', id: termixId, text: text.slice(0, 200) });
+    }
+  }
+
+  // message.updated fallback preview (for payloads that don't emit text part updates)
+  if (payload.event === 'message.updated') {
+    const parts = payload.info?.parts;
+    if (Array.isArray(parts)) {
+      const latest = [...parts].reverse().find(p =>
+        typeof p?.text === 'string' && (p.type === 'text' || p.type === 'reasoning')
+      );
+      if (latest?.text) {
+        broadcastFn?.({ type: 'session.preview', id: termixId, text: latest.text.slice(0, 200) });
+      }
+    }
   }
 
   // session.updated → capture title, ensure token
