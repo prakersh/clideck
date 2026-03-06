@@ -109,13 +109,14 @@ function connect() {
         break;
       }
       case 'transcript.cache':
+        state.transcriptCache = msg.cache;
         for (const [id, text] of Object.entries(msg.cache)) {
           const entry = state.terms.get(id);
           if (entry) entry.searchText = text;
         }
         break;
-      // #6: Re-apply filter when transcript data changes
       case 'transcript.append': {
+        state.transcriptCache[msg.id] = (state.transcriptCache[msg.id] || '') + '\n' + msg.text;
         const entry = state.terms.get(msg.id);
         if (entry) {
           entry.searchText = (entry.searchText || '') + '\n' + msg.text;

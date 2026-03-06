@@ -452,6 +452,7 @@ function saveConfig() {
       outputMarker: existing.outputMarker || null,
       telemetryEnabled: existing.telemetryEnabled || false,
       telemetryStatus: existing.telemetryStatus || null,
+      bridge: existing.bridge,
     };
   });
 
@@ -459,7 +460,7 @@ function saveConfig() {
   state.cfg.defaultPath = document.getElementById('cfg-default-path').value.trim();
   state.cfg.confirmClose = document.getElementById('cfg-confirm-close').checked;
   state.cfg.notifyIdle = document.getElementById('cfg-notify-idle').checked;
-  state.cfg.notifyMinWork = parseInt(document.getElementById('cfg-notify-min-work').value, 10) || 20;
+  state.cfg.notifyMinWork = parseInt(document.getElementById('cfg-notify-min-work').value, 10) || 10;
   state.cfg.notifySoundEnabled = document.getElementById('cfg-notify-sound').checked;
   state.cfg.notifySound = document.getElementById('cfg-notify-sound-pick').value;
   // Preserve fields not managed by this form

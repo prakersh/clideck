@@ -800,7 +800,8 @@ export function applyFilter() {
   for (const row of document.querySelectorAll('[data-resumable-id]')) {
     if (tab === 'unread') { row.style.display = 'none'; continue; }
     const name = row.querySelector('.resumable-name')?.textContent.toLowerCase() || '';
-    row.style.display = !q || name.includes(q) ? '' : 'none';
+    const tx = (state.transcriptCache?.[row.dataset.resumableId] || '').toLowerCase();
+    row.style.display = !q || name.includes(q) || tx.includes(q) ? '' : 'none';
   }
 
   // Show/hide project groups

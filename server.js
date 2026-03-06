@@ -11,7 +11,7 @@ const telemetry = require('./telemetry-receiver');
 
 ensurePtyHelper();
 sessions.loadSessions();
-transcript.init(sessions.broadcast);
+transcript.init(sessions.broadcast, new Set(sessions.getResumable().map(s => s.id)));
 telemetry.init(sessions.broadcast, sessions.getSessions);
 require('./opencode-bridge').init(sessions.broadcast, sessions.getSessions);
 

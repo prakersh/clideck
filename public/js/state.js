@@ -7,6 +7,7 @@ export const state = {
   presets: [],
   resumable: [],
   filter: { query: '', tab: 'all' },
+  transcriptCache: {},
 };
 
 export function send(msg) {
