@@ -103,6 +103,9 @@ server.listen(PORT, '127.0.0.1', () => {
 
 \x1b[38;5;141m  ╺━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━╸\x1b[0m
 
-\x1b[38;5;245m  v${v}                    ${url}\x1b[0m
+\x1b[38;5;245m  v${v}\x1b[0m
+
+\x1b[38;5;252m  ▸ Ready at \x1b[38;5;44m${url}\x1b[0m
+\x1b[38;5;245m  ▸ Stop with \x1b[38;5;252mCtrl+C\x1b[38;5;245m · Restart anytime with \x1b[38;5;252mtermix\x1b[0m
 `);
 });

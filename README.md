@@ -10,6 +10,13 @@ Termix is a local terminal dashboard that lets you run, monitor, and manage mult
 npx termix-cli
 ```
 
+Or install globally to get the `termix` command:
+
+```bash
+npm install -g termix-cli
+termix
+```
+
 Open [http://localhost:4000](http://localhost:4000). Click **+**, pick an agent, start working.
 
 ## Supported Agents
@@ -39,7 +46,7 @@ Each agent runs in a real terminal. Termix receives lightweight telemetry signal
 
 Full setup guides, agent configuration, and feature docs:
 
-**[docs.termix.dev](https://termix-a68d5bb0.mintlify.app/)**
+**[Documentation](https://termix-a68d5bb0.mintlify.app/)**
 
 ## License
 
