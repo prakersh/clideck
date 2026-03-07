@@ -56,6 +56,9 @@ function createFromPreset(preset, sessionName, cwd, projectId) {
       resumeCommand: preset.resumeCommand,
       sessionIdPattern: preset.sessionIdPattern,
       outputMarker: preset.outputMarker || null,
+      telemetryEnabled: preset.presetId === 'claude-code',
+      telemetryStatus: preset.presetId === 'claude-code' ? { ok: true } : null,
+      bridge: preset.bridge,
     };
     state.cfg.commands.push(cmd);
     send({ type: 'config.update', config: state.cfg });

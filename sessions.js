@@ -11,6 +11,7 @@ const plugins = require('./plugin-loader');
 const THEMES = require('./themes');
 const MAX_BUFFER = 200 * 1024;
 const PORT = 4000;
+const ANSI_RE = /\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b\].*?(?:\x07|\x1b\\)|\x1b./g;
 const PRESETS = JSON.parse(require('fs').readFileSync(join(__dirname, 'agent-presets.json'), 'utf8'));
 for (const p of PRESETS) if (p.presetId === 'shell') p.command = defaultShell;
 const { DATA_DIR } = require('./paths');
@@ -32,7 +33,8 @@ function broadcast(msg) {
 function buildTelemetryEnv(id, cmd) {
   const bin = binName(cmd.command);
   const preset = PRESETS.find(p => binName(p.command) === bin);
-  if (!preset?.telemetryEnv || !cmd.telemetryEnabled) return {};
+  const telemetryEnabled = cmd.telemetryEnabled ?? (preset?.presetId === 'claude-code');
+  if (!preset?.telemetryEnv || !telemetryEnabled) return {};
   const env = {};
   for (const [k, v] of Object.entries(preset.telemetryEnv)) {
     env[k] = v.replace('{{port}}', String(PORT));
@@ -64,7 +66,7 @@ function spawnSession(id, cmd, parts, cwd, name, themeId, commandId, savedToken,
     return e;
   }
 
-  const sessionIdRe = cmd.sessionIdPattern ? new RegExp(cmd.sessionIdPattern) : null;
+  const sessionIdRe = cmd.sessionIdPattern ? new RegExp(cmd.sessionIdPattern, 'i') : null;
   const session = { name, themeId, commandId, cwd, pty: term, chunks: [], chunksSize: 0, sessionToken: savedToken || null, projectId: projectId || null };
   sessions.set(id, session);
 
@@ -82,8 +84,12 @@ function spawnSession(id, cmd, parts, cwd, name, themeId, commandId, savedToken,
     }
     // Capture session ID from output
     if (sessionIdRe && !session.sessionToken) {
-      const match = session.chunks.join('').match(sessionIdRe);
-      if (match) session.sessionToken = match[1];
+      const joined = session.chunks.join('');
+      const match = joined.match(sessionIdRe) || joined.replace(ANSI_RE, '').match(sessionIdRe);
+      if (match) {
+        session.sessionToken = match[1];
+        console.log(`Session ${id.slice(0, 8)}: captured token via output regex: ${match[1].slice(0, 12)}…`);
+      }
     }
     activity.trackOut(id, data);
     transcript.trackOutput(id, data);
@@ -127,6 +133,13 @@ function create(msg, ws, cfg) {
   }
 
   broadcast({ type: 'created', id, name, themeId, commandId: cmd.id, projectId });
+
+  // Immediate setup notification if config not detected
+  const bin = binName(cmd.command);
+  const preset = PRESETS.find(p => binName(p.command) === bin);
+  if (preset && (preset.telemetrySetup || preset.bridge) && !(cmd.telemetryEnabled && cmd.telemetryStatus?.ok)) {
+    broadcast({ type: 'session.needsSetup', id });
+  }
 }
 
 // --- Resume a persisted session ---
@@ -280,12 +293,16 @@ function sendBuffers(ws) {
 
 function saveSessions(cfg) {
   // Only persist live sessions that are actually resumable
+  let skippedNoToken = 0;
   const live = [...sessions]
     .filter(([, s]) => {
       const cmd = cfg.commands.find(c => c.id === s.commandId);
       if (!cmd?.canResume || !cmd.resumeCommand) return false;
       // If resume needs a session ID, we must have captured one
-      if (cmd.resumeCommand.includes('{{sessionId}}') && !s.sessionToken) return false;
+      if (cmd.resumeCommand.includes('{{sessionId}}') && !s.sessionToken) {
+        skippedNoToken++;
+        return false;
+      }
       return true;
     })
     .map(([id, s]) => ({
@@ -300,6 +317,7 @@ function saveSessions(cfg) {
   const data = [...live, ...pending];
 
   writeFileSync(SAVED_PATH, JSON.stringify(data, null, 2));
+  if (skippedNoToken > 0) console.warn(`Skipped ${skippedNoToken} resumable session(s): no session token captured`);
   console.log(`Saved ${data.length} session(s) to ${SAVED_PATH} (${live.length} live, ${pending.length} pending)`);
 }
 

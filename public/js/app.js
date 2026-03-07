@@ -292,15 +292,17 @@ function showTelemetrySetup(commandId, sessionId) {
   if (cmd.telemetryEnabled && cmd.telemetryStatus?.ok) return;
   const bin = binName(cmd.command);
   const preset = state.presets.find(p => binName(p.command) === bin);
-  if (!preset?.telemetrySetup || shownSetup.has(preset.presetId)) return;
+  const setupRaw = preset.telemetrySetup || preset.pluginSetup;
+  if (!setupRaw || shownSetup.has(preset.presetId)) return;
   shownSetup.add(preset.presetId);
 
   const port = location.port || '4000';
-  const setupText = preset.telemetrySetup.replace(/\{\{port\}\}/g, port);
+  const setupText = setupRaw.replace(/\{\{port\}\}/g, port);
   const [desc, ...codeParts] = setupText.split('\n\n');
   const code = codeParts.join('\n\n');
   const auto = preset.telemetryAutoSetup;
   const iconSrc = preset.icon?.startsWith('/') ? preset.icon : null;
+  const title = preset.bridge ? 'Bridge Plugin' : 'Status Tracking';
 
   const toast = document.createElement('div');
   toast.dataset.setupPreset = preset.presetId;
@@ -314,7 +316,7 @@ function showTelemetrySetup(commandId, sessionId) {
   toast.innerHTML = `
     <div class="flex items-center gap-2.5 px-4 pt-3.5 pb-1">
       ${iconSrc ? `<img src="${esc(iconSrc)}" class="w-5 h-5 object-contain flex-shrink-0">` : ''}
-      <span class="text-[13px] font-semibold text-slate-200">${esc(preset.name)} Telemetry</span>
+      <span class="text-[13px] font-semibold text-slate-200">${esc(preset.name)} — ${title}</span>
       <button class="dismiss-btn ml-auto w-6 h-6 flex items-center justify-center rounded-md text-slate-500 hover:text-slate-300 hover:bg-slate-700/50 transition-colors">
         <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path d="M18 6L6 18M6 6l12 12"/></svg>
       </button>

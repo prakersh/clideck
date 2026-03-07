@@ -1,4 +1,4 @@
-const { readFileSync, writeFileSync, mkdirSync, existsSync } = require('fs');
+const { readFileSync, writeFileSync, mkdirSync, existsSync, copyFileSync, unlinkSync } = require('fs');
 const { join, dirname } = require('path');
 const os = require('os');
 const config = require('./config');
@@ -11,6 +11,41 @@ const transcript = require('./transcript');
 const plugins = require('./plugin-loader');
 
 let cfg = config.load();
+if (detectTelemetryConfig(cfg)) config.save(cfg);
+
+function detectTelemetryConfig(c) {
+  const home = os.homedir();
+  const port = '4000';
+  let changed = false;
+  for (const cmd of c.commands || []) {
+    const bin = binName(cmd.command);
+    const preset = presets.find(p => binName(p.command) === bin);
+    if (!preset) continue;
+    let detected = false;
+    if (preset.presetId === 'claude-code') {
+      detected = true;
+    } else if (preset.presetId === 'codex') {
+      try {
+        const content = readFileSync(join(home, '.codex', 'config.toml'), 'utf8');
+        detected = content.includes('[otel]') && content.includes(`localhost:${port}`);
+      } catch {}
+    } else if (preset.presetId === 'gemini-cli') {
+      try {
+        const s = JSON.parse(readFileSync(join(home, '.gemini', 'settings.json'), 'utf8'));
+        detected = !!s.telemetry?.enabled && (s.telemetry?.otlpEndpoint || '').includes(`localhost:${port}`);
+      } catch {}
+    } else if (preset.presetId === 'opencode') {
+      detected = existsSync(join(home, '.config', 'opencode', 'plugins', 'termix-bridge.js'));
+    } else { continue; }
+    if (detected !== !!cmd.telemetryEnabled) {
+      cmd.telemetryEnabled = detected;
+      cmd.telemetryStatus = detected ? { ok: true } : null;
+      changed = true;
+    }
+  }
+  if (changed) console.log('Config: synced telemetry/plugin state from detected config files');
+  return changed;
+}
 
 function onConnection(ws) {
   sessions.clients.add(ws);
@@ -46,6 +81,7 @@ function onConnection(ws) {
 
       case 'config.update':
         cfg = { ...cfg, ...msg.config };
+        detectTelemetryConfig(cfg);
         config.save(cfg);
         sessions.broadcast({ type: 'config', config: cfg });
         break;
@@ -196,6 +232,14 @@ function applyTelemetryConfig(preset) {
       return { success: true, message: 'Added telemetry section to ~/.gemini/settings.json' };
     }
 
+    if (preset.presetId === 'opencode') {
+      const pluginDir = join(home, '.config', 'opencode', 'plugins');
+      const src = join(__dirname, 'opencode-plugin', 'termix-bridge.js');
+      mkdirSync(pluginDir, { recursive: true });
+      copyFileSync(src, join(pluginDir, 'termix-bridge.js'));
+      return { success: true, message: 'Installed bridge plugin to ~/.config/opencode/plugins/' };
+    }
+
     return { success: false, message: `No auto-setup for ${preset.presetId}` };
   } catch (err) {
     return { success: false, message: err.message };
@@ -224,6 +268,12 @@ function removeTelemetryConfig(preset) {
       delete settings.telemetry;
       writeFileSync(configPath, JSON.stringify(settings, null, 2) + '\n');
       return { success: true, message: 'Removed telemetry section from ~/.gemini/settings.json' };
+    }
+
+    if (preset.presetId === 'opencode') {
+      const dest = join(home, '.config', 'opencode', 'plugins', 'termix-bridge.js');
+      try { unlinkSync(dest); } catch {}
+      return { success: true, message: 'Removed bridge plugin' };
     }
 
     return { success: false, message: `No removal logic for ${preset.presetId}` };

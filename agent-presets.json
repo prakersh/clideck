@@ -74,7 +74,10 @@
     "outputMarker": "\u2502",
     "bridge": "opencode",
     "pluginPath": "~/.config/opencode/plugins/termix-bridge.js",
-    "pluginSetup": "Copy the Termix bridge plugin to enable real-time status and resume:\n\ncp opencode-plugin/termix-bridge.js ~/.config/opencode/plugins/"
+    "pluginSetup": "Install the Termix bridge plugin to enable real-time status and resume.\n\ncp opencode-plugin/termix-bridge.js ~/.config/opencode/plugins/",
+    "telemetryAutoSetup": {
+      "label": "Install plugin"
+    }
   },
   {
     "presetId": "shell",
