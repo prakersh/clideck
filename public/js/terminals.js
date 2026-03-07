@@ -574,10 +574,12 @@ function hideRestartBanner(id) {
 }
 
 export function restartComplete(id, msg) {
-  console.log('[restart] restartComplete received', id, msg);
   hideRestartBanner(id);
   const entry = state.terms.get(id);
-  if (entry) entry.term.clear();
+  if (!entry) return;
+  entry.term.clear();
+  if (state.active !== id) select(id);
+  else entry.term.focus();
 }
 
 // --- Rename ---
