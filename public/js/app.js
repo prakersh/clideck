@@ -176,8 +176,8 @@ function connect() {
             <button class="dismiss-btn px-3 py-2 text-xs text-slate-500 hover:text-slate-300 transition-colors">Dismiss</button>`;
           actionsEl.querySelector('.dismiss-btn').onclick = () => toast.remove();
           actionsEl.querySelector('.restart-btn').onclick = () => {
-            send({ type: 'close', id: sid });
-            send({ type: 'create', commandId: cmdId, ...estimateSize() });
+            const entry = state.terms.get(sid);
+            send({ type: 'session.restart', id: sid, themeId: entry?.themeId, cols: entry?.term?.cols, rows: entry?.term?.rows });
             toast.remove();
           };
         } else {

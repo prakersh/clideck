@@ -28,7 +28,13 @@ function parseCommand(str) {
     }
   }
   if (current) parts.push(current);
-  return parts.length ? parts : [defaultShell];
+  if (!parts.length) return [defaultShell];
+  // On Windows, node-pty can't resolve non-.exe commands via PATH (e.g. claude, codex).
+  // Wrap through cmd.exe /c so Windows handles PATHEXT resolution natively.
+  if (process.platform === 'win32' && !parts[0].match(/\.(exe|com)$/i) && !/^[a-z]:\\/i.test(parts[0])) {
+    return [process.env.COMSPEC || 'cmd.exe', '/c', ...parts];
+  }
+  return parts;
 }
 
 function resolveValidDir(dir) {
