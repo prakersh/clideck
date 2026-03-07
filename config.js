@@ -59,6 +59,11 @@ function migrate(cfg) {
     if (cmd.telemetryStatus === undefined)  cmd.telemetryStatus = null;
     // Sync bridge config from preset
     if (preset?.bridge) cmd.bridge = preset.bridge;
+    // Codex: add --no-alt-screen to avoid blank screen in embedded xterm
+    if (preset?.presetId === 'codex') {
+      if (cmd.command === 'codex') cmd.command = preset.command;
+      if (cmd.resumeCommand === 'codex resume {{sessionId}}') cmd.resumeCommand = preset.resumeCommand;
+    }
   }
   // Auto-add any shipped presets not yet in the commands list
   for (const preset of PRESETS) {
