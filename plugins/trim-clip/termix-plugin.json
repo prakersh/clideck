@@ -1,0 +1,20 @@
+{
+  "id": "trim-clip",
+  "name": "Trim Clip",
+  "version": "1.0.0",
+  "settings": [
+    {
+      "key": "enabled",
+      "label": "Enabled",
+      "type": "toggle",
+      "default": true
+    },
+    {
+      "key": "trimLeading",
+      "label": "Trim leading whitespace",
+      "type": "toggle",
+      "default": false,
+      "description": "Remove leading spaces from each line (off preserves indentation)"
+    }
+  ]
+}

@@ -103,8 +103,13 @@ function connect() {
           if (isIdle) entry.idleTicks = (entry.idleTicks || 0) + 1;
           else entry.idleTicks = 0;
 
-          if (entry.workTicks >= 2) setStatus(sid, true);
-          else if (entry.idleTicks >= 2) setStatus(sid, false);
+          if (entry.workTicks >= 2) {
+            if (!entry.working) send({ type: 'session.statusReport', id: sid, working: true });
+            setStatus(sid, true);
+          } else if (entry.idleTicks >= 2) {
+            if (entry.working) send({ type: 'session.statusReport', id: sid, working: false });
+            setStatus(sid, false);
+          }
         }
         break;
       }
@@ -183,6 +188,12 @@ function connect() {
         }
         break;
       }
+      case 'plugins':
+        loadPlugins(msg.list);
+        break;
+      default:
+        if (msg.type?.startsWith('plugin.')) dispatchPluginMessage(msg);
+        break;
     }
   };
 
@@ -498,6 +509,146 @@ function openProjectCreator() {
 }
 
 document.getElementById('btn-theme-toggle').addEventListener('click', toggleMode);
+
+// --- Plugin system (frontend) ---
+
+const pluginMessageHandlers = new Map();
+const loadedPlugins = new Set();
+
+function dispatchPluginMessage(msg) {
+  const fn = pluginMessageHandlers.get(msg.type);
+  if (fn) {
+    try { fn(msg); }
+    catch (e) { console.error(`[plugin] client handler error for ${msg.type}:`, e); }
+  }
+}
+
+function addPluginToolbarButton(pluginId, opts) {
+  const toolbar = document.getElementById('plugin-toolbar');
+  const btn = document.createElement('button');
+  btn.className = 'plugin-btn w-8 h-8 flex items-center justify-center rounded-lg bg-slate-800/80 border border-slate-700/50 text-slate-400 hover:text-slate-200 hover:bg-slate-700 transition-colors backdrop-blur-sm';
+  btn.title = opts.title || '';
+  btn.innerHTML = opts.icon || '';
+  btn.dataset.pluginId = pluginId;
+  if (opts.id) btn.dataset.actionId = opts.id;
+  btn.addEventListener('click', () => {
+    if (typeof opts.onClick === 'function') opts.onClick();
+  });
+  toolbar.appendChild(btn);
+  return btn;
+}
+
+function renderPluginsPanel(list) {
+  const container = document.getElementById('plugins-list');
+  if (!list.length) {
+    container.innerHTML = `<div class="flex flex-col items-center justify-center h-full px-6 text-center">
+      <p class="text-sm text-slate-400 mb-1">No plugins installed</p>
+      <p class="text-xs text-slate-600 leading-relaxed">Plugins live in <code class="px-1 py-0.5 rounded bg-slate-800 text-slate-400 text-[11px]">~/.termix/plugins/</code><br>Each one is a folder with a <code class="px-1 py-0.5 rounded bg-slate-800 text-slate-400 text-[11px]">termix-plugin.json</code> and <code class="px-1 py-0.5 rounded bg-slate-800 text-slate-400 text-[11px]">index.js</code></p>
+    </div>`;
+    return;
+  }
+  container.innerHTML = list.map(p => `
+    <div class="plugin-card px-4 py-3 ${list.indexOf(p) > 0 ? 'border-t border-slate-700/30' : ''}">
+      <div class="flex items-center gap-2 mb-1">
+        <span class="text-sm font-medium text-slate-200">${esc(p.name)}</span>
+        <span class="text-[10px] text-slate-600">v${esc(p.version)}</span>
+      </div>
+      ${(p.settings || []).map(s => renderSettingField(p.id, s, p.settingValues[s.key] ?? s.default)).join('')}
+    </div>`).join('');
+
+  container.querySelectorAll('[data-setting]').forEach(el => {
+    const pluginId = el.dataset.plugin;
+    const key = el.dataset.setting;
+    const onChange = (value) => send({ type: 'plugin.settings.update', pluginId, key, value });
+    if (el.type === 'checkbox') el.addEventListener('change', () => onChange(el.checked));
+    else if (el.tagName === 'SELECT') el.addEventListener('change', () => onChange(el.value));
+    else if (el.type === 'number') el.addEventListener('change', () => onChange(Number(el.value)));
+    else el.addEventListener('change', () => onChange(el.value));
+  });
+}
+
+function renderSettingField(pluginId, setting, value) {
+  const id = `ps-${pluginId}-${setting.key}`;
+  const attrs = `data-plugin="${esc(pluginId)}" data-setting="${esc(setting.key)}"`;
+  const label = esc(setting.label || setting.key);
+  const desc = setting.description ? `<p class="text-[11px] text-slate-600 mt-0.5">${esc(setting.description)}</p>` : '';
+
+  if (setting.type === 'toggle') {
+    return `<label class="flex items-center gap-2 mt-2 cursor-pointer">
+      <input type="checkbox" id="${id}" ${attrs} ${value ? 'checked' : ''} class="accent-blue-500">
+      <span class="text-xs text-slate-400">${label}</span>
+    </label>${desc}`;
+  }
+  if (setting.type === 'select') {
+    const opts = (setting.options || []).map(o => {
+      const optVal = typeof o === 'object' ? o.value : o;
+      const optLabel = typeof o === 'object' ? o.label : o;
+      return `<option value="${esc(String(optVal))}" ${String(value) === String(optVal) ? 'selected' : ''}>${esc(String(optLabel))}</option>`;
+    }).join('');
+    return `<div class="mt-2">
+      <label class="block text-xs text-slate-400 mb-1">${label}</label>
+      <select id="${id}" ${attrs} class="w-full px-2 py-1.5 text-xs bg-slate-800 border border-slate-700 rounded-md text-slate-200 outline-none focus:border-blue-500 transition-colors">${opts}</select>
+      ${desc}
+    </div>`;
+  }
+  if (setting.type === 'number') {
+    const min = setting.min != null ? `min="${setting.min}"` : '';
+    const max = setting.max != null ? `max="${setting.max}"` : '';
+    return `<div class="mt-2">
+      <label class="block text-xs text-slate-400 mb-1">${label}</label>
+      <input type="number" id="${id}" ${attrs} value="${value ?? ''}" ${min} ${max} class="w-full px-2 py-1.5 text-xs bg-slate-800 border border-slate-700 rounded-md text-slate-200 outline-none focus:border-blue-500 transition-colors">
+      ${desc}
+    </div>`;
+  }
+  // Default: text
+  return `<div class="mt-2">
+    <label class="block text-xs text-slate-400 mb-1">${label}</label>
+    <input type="text" id="${id}" ${attrs} value="${esc(String(value ?? ''))}" ${setting.placeholder ? `placeholder="${esc(setting.placeholder)}"` : ''} class="w-full px-2 py-1.5 text-xs bg-slate-800 border border-slate-700 rounded-md text-slate-200 placeholder-slate-600 outline-none focus:border-blue-500 transition-colors">
+    ${desc}
+  </div>`;
+}
+
+async function loadPlugins(list) {
+  renderPluginsPanel(list);
+
+  // Render server-registered toolbar actions
+  const toolbar = document.getElementById('plugin-toolbar');
+  toolbar.querySelectorAll('.plugin-btn[data-server]').forEach(b => b.remove());
+  for (const plugin of list) {
+    for (const action of plugin.actions || []) {
+      if (action.slot !== 'toolbar') continue;
+      const btn = document.createElement('button');
+      btn.className = 'plugin-btn w-8 h-8 flex items-center justify-center rounded-lg bg-slate-800/80 border border-slate-700/50 text-slate-400 hover:text-slate-200 hover:bg-slate-700 transition-colors backdrop-blur-sm';
+      btn.title = action.title || '';
+      btn.innerHTML = action.icon || '';
+      btn.dataset.pluginId = plugin.id;
+      btn.dataset.server = '1';
+      btn.addEventListener('click', () => {
+        send({ type: `plugin.${plugin.id}.${action.id}`, action: action.id });
+      });
+      toolbar.appendChild(btn);
+    }
+  }
+
+  // Load client-side plugins
+  for (const plugin of list) {
+    if (!plugin.hasClient || loadedPlugins.has(plugin.id)) continue;
+    loadedPlugins.add(plugin.id);
+    try {
+      const mod = await import(`/plugins/${plugin.id}/client.js`);
+      if (typeof mod.init === 'function') {
+        mod.init({
+          pluginId: plugin.id,
+          send(event, data = {}) { send({ ...data, type: `plugin.${plugin.id}.${event}` }); },
+          onMessage(event, fn) { pluginMessageHandlers.set(`plugin.${plugin.id}.${event}`, fn); },
+          addToolbarButton(opts) { return addPluginToolbarButton(plugin.id, opts); },
+          getActiveSessionId() { return state.active; },
+          writeToSession(id, text) { send({ type: 'input', id, data: text }); },
+        });
+      }
+    } catch (e) { console.error(`[plugin:${plugin.id}] client load failed:`, e); }
+  }
+}
 
 initDrag();
 connect();

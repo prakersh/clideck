@@ -8,12 +8,15 @@ const sessions = require('./sessions');
 
 const transcript = require('./transcript');
 const telemetry = require('./telemetry-receiver');
+const plugins = require('./plugin-loader');
 
 ensurePtyHelper();
 sessions.loadSessions();
 transcript.init(sessions.broadcast, new Set(sessions.getResumable().map(s => s.id)));
 telemetry.init(sessions.broadcast, sessions.getSessions);
 require('./opencode-bridge').init(sessions.broadcast, sessions.getSessions);
+const config = require('./config');
+plugins.init(sessions.broadcast, sessions.getSessions, () => require('./handlers').getConfig(), (cfg) => config.save(cfg));
 
 const PORT = 4000;
 const MIME = { '.html': 'text/html', '.css': 'text/css', '.js': 'application/javascript', '.png': 'image/png', '.svg': 'image/svg+xml', '.mp3': 'audio/mpeg' };
@@ -62,6 +65,16 @@ const server = http.createServer((req, res) => {
     return res.writeHead(200).end('{}');
   }
 
+  // Plugin static files (/plugins/<id>/client.js, /plugins/<id>/public/*)
+  if (req.url.startsWith('/plugins/')) {
+    const pluginFile = plugins.resolveFile(req.url);
+    if (pluginFile) {
+      res.writeHead(200, { 'Content-Type': MIME[extname(pluginFile)] || 'application/javascript' });
+      return res.end(readFileSync(pluginFile));
+    }
+    return res.writeHead(404).end();
+  }
+
   const filePath = ALIASES[req.url]
     || resolve(PUBLIC_ROOT, (req.url === '/' ? 'index.html' : req.url).replace(/^\//, ''));
   if (!filePath.startsWith(PUBLIC_ROOT) && !ALIASES[req.url]) return res.writeHead(403).end();
@@ -81,6 +94,7 @@ activity.start(sessions.getSessions(), sessions.broadcast);
 // Graceful shutdown: persist sessions before exit
 const { getConfig } = require('./handlers');
 function onShutdown() {
+  plugins.shutdown();
   activity.stop();
   sessions.shutdown(getConfig());
   process.exit(0);

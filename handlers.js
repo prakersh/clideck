@@ -8,6 +8,7 @@ const presets = JSON.parse(readFileSync(join(__dirname, 'agent-presets.json'), '
 const { listDirs, binName, defaultShell } = require('./utils');
 for (const p of presets) if (p.presetId === 'shell') p.command = defaultShell;
 const transcript = require('./transcript');
+const plugins = require('./plugin-loader');
 
 let cfg = config.load();
 
@@ -20,6 +21,7 @@ function onConnection(ws) {
   ws.send(JSON.stringify({ type: 'sessions', list: sessions.list() }));
   ws.send(JSON.stringify({ type: 'sessions.resumable', list: sessions.getResumable() }));
   ws.send(JSON.stringify({ type: 'transcript.cache', cache: transcript.getCache() }));
+  ws.send(JSON.stringify({ type: 'plugins', list: plugins.getInfo() }));
   sessions.sendBuffers(ws);
 
   ws.on('message', (raw) => {
@@ -30,8 +32,11 @@ function onConnection(ws) {
       case 'create':          sessions.create(msg, ws, cfg); break;
       case 'session.resume':  sessions.resume(msg, ws, cfg); break;
       case 'session.restart': console.log('[handler] session.restart', msg.id); sessions.restart(msg, ws, cfg); break;
-      case 'input':           sessions.input(msg); break;
-      case 'resize':          sessions.resize(msg); break;
+      case 'input':                sessions.input(msg); break;
+      case 'session.statusReport':
+        if (sessions.getSessions().has(msg.id)) plugins.notifyStatus(msg.id, !!msg.working);
+        break;
+      case 'resize':               sessions.resize(msg); break;
       case 'rename':          sessions.rename(msg); break;
       case 'close':           sessions.close(msg); break;
 
@@ -137,6 +142,15 @@ function onConnection(ws) {
         ws.send(JSON.stringify({ type: 'dirs', path: target, entries, error }));
         break;
       }
+
+      case 'plugin.settings.update':
+        plugins.updateSetting(msg.pluginId, msg.key, msg.value);
+        sessions.broadcast({ type: 'plugins', list: plugins.getInfo() });
+        break;
+
+      default:
+        if (msg.type?.startsWith('plugin.')) plugins.handleMessage(msg);
+        break;
     }
   });
 

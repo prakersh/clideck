@@ -1,6 +1,6 @@
 import { closeThemeMenu } from './settings.js';
 
-const ALL_PANELS = ['chats', 'prompts', 'settings'];
+const ALL_PANELS = ['chats', 'prompts', 'plugins', 'settings'];
 const ACTIVE = ['text-slate-200', 'bg-slate-800'];
 const INACTIVE = ['text-slate-500', 'hover:text-slate-300', 'hover:bg-slate-800/50'];
 

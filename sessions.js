@@ -6,6 +6,7 @@ const activity = require('./activity');
 const transcript = require('./transcript');
 const telemetry = require('./telemetry-receiver');
 const opencodeBridge = require('./opencode-bridge');
+const plugins = require('./plugin-loader');
 
 const THEMES = require('./themes');
 const MAX_BUFFER = 200 * 1024;
@@ -23,6 +24,7 @@ let resumable = [];
 function broadcast(msg) {
   const raw = JSON.stringify(msg);
   for (const c of clients) if (c.readyState === 1) c.send(raw);
+  if (msg.type === 'session.status') plugins.notifyStatus(msg.id, msg.working);
 }
 
 // --- Spawn a PTY and wire up a session ---
@@ -85,6 +87,7 @@ function spawnSession(id, cmd, parts, cwd, name, themeId, commandId, savedToken,
     }
     activity.trackOut(id, data);
     transcript.trackOutput(id, data);
+    plugins.notifyOutput(id, data);
     broadcast({ type: 'output', id, data });
   });
 
@@ -95,6 +98,7 @@ function spawnSession(id, cmd, parts, cwd, name, themeId, commandId, savedToken,
     telemetry.clear(id);
     opencodeBridge.clear(id);
     transcript.clear(id);
+    plugins.clearStatus(id);
     sessions.delete(id);
     broadcast({ type: 'closed', id });
   });
@@ -173,9 +177,10 @@ function resume(msg, ws, cfg) {
 // --- Standard session operations ---
 
 function input(msg) {
-  activity.trackIn(msg.id, msg.data.length);
-  transcript.trackInput(msg.id, msg.data);
-  sessions.get(msg.id)?.pty.write(msg.data);
+  const data = plugins.transformInput(msg.id, msg.data);
+  activity.trackIn(msg.id, data.length);
+  transcript.trackInput(msg.id, data);
+  sessions.get(msg.id)?.pty.write(data);
 }
 function resize(msg) { sessions.get(msg.id)?.pty.resize(msg.cols, msg.rows); }
 
@@ -198,7 +203,7 @@ function setMute(id, muted) {
 
 function close(msg) {
   const s = sessions.get(msg.id);
-  if (s) { s.pty.kill(); telemetry.clear(msg.id); transcript.clear(msg.id); sessions.delete(msg.id); broadcast({ type: 'closed', id: msg.id }); }
+  if (s) { s.pty.kill(); telemetry.clear(msg.id); transcript.clear(msg.id); plugins.clearStatus(msg.id); sessions.delete(msg.id); broadcast({ type: 'closed', id: msg.id }); }
   // Also remove from resumable list if present
   const before = resumable.length;
   resumable = resumable.filter(r => r.id !== msg.id);
