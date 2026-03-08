@@ -57,7 +57,7 @@ OpenTelemetry runs locally between the agent and Termix. No data is collected, t
 
 ## Platform Support
 
-Tested on **macOS** and **Windows**. Works in any modern browser. Linux: untested — if you try it, open an issue and let us know.
+Tested on **macOS** and **Windows**. Works in any modern browser. Linux: untested — if you try it, open an issue and let me know.
 
 ## Documentation
 
