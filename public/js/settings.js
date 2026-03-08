@@ -386,21 +386,22 @@ function renderNotifications() {
   document.getElementById('cfg-notify-idle').checked = enabled;
   document.getElementById('cfg-notify-min-work').value = state.cfg.notifyMinWork || 10;
 
-  const permRow = document.getElementById('notify-permission-row');
   const permStatus = document.getElementById('notify-permission-status');
-  permRow.classList.toggle('hidden', !enabled);
-
   if (enabled && 'Notification' in window) {
     const perm = Notification.permission;
+    permStatus.classList.remove('hidden');
     if (perm === 'granted') {
-      permStatus.textContent = 'Notifications are enabled';
-      permStatus.className = 'text-xs text-emerald-500 mt-1.5';
+      permStatus.textContent = 'Enabled';
+      permStatus.className = 'text-[11px] ml-auto text-emerald-500';
     } else if (perm === 'denied') {
-      permStatus.textContent = 'Notifications blocked — check browser settings';
-      permStatus.className = 'text-xs text-red-400 mt-1.5';
+      permStatus.textContent = 'Blocked — check browser site settings';
+      permStatus.className = 'text-[11px] ml-auto text-red-400';
     } else {
-      permStatus.textContent = '';
+      permStatus.textContent = 'Permission pending — toggle to re-prompt';
+      permStatus.className = 'text-[11px] ml-auto text-yellow-500';
     }
+  } else {
+    permStatus.classList.add('hidden');
   }
 
   const soundEnabled = state.cfg.notifySoundEnabled !== false;
@@ -410,21 +411,14 @@ function renderNotifications() {
 }
 
 document.getElementById('cfg-notify-idle').addEventListener('change', (e) => {
-  const enabled = e.target.checked;
-  document.getElementById('notify-permission-row').classList.toggle('hidden', !enabled);
-  if (enabled && 'Notification' in window && Notification.permission === 'default') {
+  if (e.target.checked && 'Notification' in window && Notification.permission === 'default') {
     Notification.requestPermission().then(() => renderNotifications());
   }
   saveConfig();
+  renderNotifications();
 });
 
 document.getElementById('cfg-notify-min-work').addEventListener('change', saveConfig);
-
-document.getElementById('btn-notify-permission').addEventListener('click', () => {
-  if ('Notification' in window) {
-    Notification.requestPermission().then(() => renderNotifications());
-  }
-});
 
 document.getElementById('cfg-notify-sound').addEventListener('change', (e) => {
   document.getElementById('notify-sound-row').classList.toggle('hidden', !e.target.checked);

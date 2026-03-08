@@ -133,7 +133,7 @@
         </div>
         <h3 class="text-xs font-semibold uppercase tracking-wider text-slate-500 mb-3 mt-8">Behavior</h3>
         <label class="flex items-center gap-2 text-sm text-slate-300 cursor-pointer">
-          <input type="checkbox" id="cfg-confirm-close" class="accent-blue-500">
+          <input type="checkbox" id="cfg-confirm-close" name="cfg-confirm-close" class="accent-blue-500">
           Confirm before closing a session
         </label>
       </div>
@@ -152,18 +152,15 @@
         <h3 class="text-xs font-semibold uppercase tracking-wider text-slate-500 mb-4">Notifications</h3>
         <div class="mb-5">
           <label class="flex items-center gap-2 text-sm text-slate-300 cursor-pointer">
-            <input type="checkbox" id="cfg-notify-idle" class="accent-blue-500">
+            <input type="checkbox" id="cfg-notify-idle" name="cfg-notify-idle" class="accent-blue-500">
             Notify when an agent finishes working
+            <span id="notify-permission-status" class="hidden text-[11px] ml-auto"></span>
           </label>
           <p class="text-xs text-slate-500 mt-1.5 ml-6">Get a browser notification when a session goes from working to idle</p>
         </div>
-        <div id="notify-permission-row" class="hidden mb-5 ml-6">
-          <button id="btn-notify-permission" class="px-3 py-1.5 text-xs bg-slate-800 border border-slate-600 rounded-md text-slate-300 hover:bg-slate-700 transition-colors">Enable browser notifications</button>
-          <p id="notify-permission-status" class="text-xs text-slate-500 mt-1.5"></p>
-        </div>
         <div class="mb-5">
           <label class="flex items-center gap-2 text-sm text-slate-300 cursor-pointer">
-            <input type="checkbox" id="cfg-notify-sound" class="accent-blue-500" checked>
+            <input type="checkbox" id="cfg-notify-sound" name="cfg-notify-sound" class="accent-blue-500" checked>
             Play sound when an agent finishes working
           </label>
           <p class="text-xs text-slate-500 mt-1.5 ml-6">Audio beep on working-to-idle transitions</p>
@@ -195,7 +192,7 @@
             <option value="60">60 seconds</option>
           </select>
         </div>
-        <div class="mt-6 px-4 py-3 rounded-lg bg-slate-800/40 border border-slate-700/40">
+        <div class="mt-6 px-4 py-3 rounded-lg bg-slate-800/50 border border-slate-700/40">
           <p class="text-[11px] font-medium text-slate-400 mb-1.5">When do notifications fire?</p>
           <div class="text-[11px] text-slate-500 leading-relaxed space-y-1">
             <p><span class="text-slate-400">Sound</span> — plays for background sessions. If you're viewing the session, no sound.</p>
@@ -210,7 +207,7 @@
         <h3 class="text-xs font-semibold uppercase tracking-wider text-slate-500 mb-4">Appearance</h3>
         <div class="mb-5">
           <label class="block text-xs text-slate-400 mb-1.5">Default terminal theme</label>
-          <input type="hidden" id="cfg-default-theme" value="default">
+          <input type="hidden" id="cfg-default-theme" name="cfg-default-theme" value="default">
           <button type="button" id="default-theme-trigger" class="w-full px-3 py-2 text-sm bg-slate-800 border border-slate-600 rounded-md text-slate-200 text-left flex items-center justify-between outline-none hover:border-slate-500 transition-colors cursor-pointer">
             <span id="default-theme-label" class="theme-label truncate">Default</span>
             <span class="text-slate-500 text-xs ml-2">&#9662;</span>

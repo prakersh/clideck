@@ -691,6 +691,7 @@ async function loadPlugins(list) {
           onMessage(event, fn) { pluginMessageHandlers.set(`plugin.${plugin.id}.${event}`, fn); },
           addToolbarButton(opts) { return addPluginToolbarButton(plugin.id, opts); },
           getActiveSessionId() { return state.active; },
+          getTerminalSelection() { const e = state.terms.get(state.active); return e ? e.term.getSelection() : ''; },
           writeToSession(id, text) { send({ type: 'input', id, data: text }); },
           toast(message, opts) { return showToast(message, opts); },
         });

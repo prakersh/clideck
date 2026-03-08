@@ -5,7 +5,7 @@ const { DATA_DIR } = require('./paths');
 const PLUGINS_DIR = join(DATA_DIR, 'plugins');
 mkdirSync(PLUGINS_DIR, { recursive: true });
 
-// Seed bundled plugins on first run (copy if missing, never overwrite)
+// Seed bundled plugins — copy if missing, update if bundled version is newer
 const BUNDLED_DIR = join(__dirname, 'plugins');
 if (existsSync(BUNDLED_DIR)) {
   for (const entry of readdirSync(BUNDLED_DIR, { withFileTypes: true })) {
@@ -14,6 +14,15 @@ if (existsSync(BUNDLED_DIR)) {
     if (!existsSync(target)) {
       cpSync(join(BUNDLED_DIR, entry.name), target, { recursive: true });
       console.log(`[plugin] seeded ${entry.name}`);
+    } else {
+      try {
+        const bundledManifest = JSON.parse(readFileSync(join(BUNDLED_DIR, entry.name, 'termix-plugin.json'), 'utf8'));
+        const installedManifest = JSON.parse(readFileSync(join(target, 'termix-plugin.json'), 'utf8'));
+        if (bundledManifest.version !== installedManifest.version) {
+          cpSync(join(BUNDLED_DIR, entry.name), target, { recursive: true });
+          console.log(`[plugin] updated ${entry.name} ${installedManifest.version} → ${bundledManifest.version}`);
+        }
+      } catch {}
     }
   }
 }
