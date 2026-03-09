@@ -1,6 +1,8 @@
 // Central hotkey dispatcher — works in terminal focus and outside it.
 // Plugins register shortcuts via registerHotkey(combo, callback).
 
+import { handleTerminalKey } from './prompts.js';
+
 const registry = new Map(); // normalized combo → { pluginId, callback }
 
 // Normalize a KeyboardEvent into a canonical combo string
@@ -77,8 +79,11 @@ export function unregisterHotkey(pluginId, combo) {
 
 // Attach to an xterm terminal instance — xterm's hidden textarea is an input,
 // so we bypass the isInput check and dispatch directly.
+// Prompt autocomplete (// trigger) runs first, then hotkey dispatch.
 export function attachToTerminal(term) {
   term.attachCustomKeyEventHandler((e) => {
+    const promptResult = handleTerminalKey(e);
+    if (promptResult === false) return false;
     if (e.type !== 'keydown') return true;
     return dispatch(e);
   });

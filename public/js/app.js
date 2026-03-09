@@ -11,6 +11,7 @@ import { showToast } from './toast.js';
 import './nav.js';
 import { initDrag } from './drag.js';
 import { registerHotkey, unregisterHotkey } from './hotkeys.js';
+import { renderPrompts } from './prompts.js';
 
 function connect() {
   state.ws = new WebSocket(`ws://${location.host}`);
@@ -31,6 +32,7 @@ function connect() {
         applyMode(state.cfg.colorMode || 'dark');
         regroupSessions();
         renderSettings();
+        renderPrompts();
         for (const [, entry] of state.terms) applyTheme(entry.term, entry.themeId);
         break;
       case 'themes':

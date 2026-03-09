@@ -1,4 +1,5 @@
 import { closeThemeMenu } from './settings.js';
+import { closeDropdown } from './prompts.js';
 
 const ALL_PANELS = ['chats', 'prompts', 'plugins', 'settings'];
 const PANEL_TITLES = { chats: 'Sessions', prompts: 'Prompts', plugins: 'Plugins', settings: 'Settings' };
@@ -49,6 +50,7 @@ export function switchPanel(panelId) {
 document.getElementById('nav-rail').addEventListener('click', (e) => {
   const btn = e.target.closest('.rail-btn');
   if (!btn) return;
+  closeDropdown();
   if (btn.id === 'rail-settings') showSettings();
   else if (btn.dataset.panel) switchPanel(btn.dataset.panel);
 });

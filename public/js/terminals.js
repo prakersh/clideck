@@ -2,6 +2,7 @@ import { state, send } from './state.js';
 import { esc } from './utils.js';
 import { resolveTheme, resolveAccent, applyTheme } from './profiles.js';
 import { attachToTerminal } from './hotkeys.js';
+import { closeDropdown } from './prompts.js';
 function isLightBg(themeId) {
   const bg = resolveTheme(themeId)?.background;
   if (!bg || bg[0] !== '#') return false;
@@ -386,6 +387,7 @@ export function removeTerminal(id) {
 
 export function select(id) {
   if (state.active === id) return;
+  closeDropdown();
 
   const prev = document.querySelector('.group.active-session');
   if (prev) prev.classList.remove('active-session');
