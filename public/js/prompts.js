@@ -154,20 +154,27 @@ function getMatches() {
   );
 }
 
-function showDropdown(term) {
+function showDropdown() {
   closeDropdown();
   const matches = getMatches();
-  active = true;
 
   dropdown = document.createElement('div');
   dropdown.className = 'prompt-autocomplete';
-
   renderDropdownContent(matches);
 
-  // Position near the cursor in the active terminal wrapper
-  const entry = state.terms.get(state.active);
-  if (entry) entry.el.appendChild(dropdown);
-  else { active = false; return; }
+  // Position fixed, anchored to the right edge of the sidebar, clamped to viewport
+  const sidebar = document.getElementById('sidebar');
+  const sidebarRight = sidebar ? sidebar.getBoundingClientRect().right : 60;
+  const dropdownWidth = 340;
+  let left = sidebarRight + 32;
+  // Clamp: ensure dropdown fits within viewport
+  if (left + dropdownWidth > window.innerWidth - 8) left = window.innerWidth - dropdownWidth - 8;
+  if (left < 8) left = 8;
+  dropdown.style.left = left + 'px';
+  document.body.appendChild(dropdown);
+
+  // Only activate input capture after dropdown is successfully mounted
+  active = true;
 }
 
 function renderDropdownContent(matches) {
