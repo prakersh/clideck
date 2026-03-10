@@ -21,6 +21,21 @@ function randomName() {
   return `${a} ${b}`;
 }
 
+function renderPresetButtons() {
+  return sortedPresets().map(p => {
+    const hasConfigured = state.cfg.commands.some(c => binName(c.command) === binName(p.command) && c.enabled !== false);
+    const missing = p.available === false && !hasConfigured;
+    return `
+      <button class="preset-btn w-full flex items-center gap-2.5 px-3 py-2 rounded-md hover:bg-slate-700/70 text-sm transition-colors text-left ${missing ? 'text-slate-500' : 'text-slate-300'}" data-preset="${p.presetId}">
+        <span class="${missing ? 'opacity-40' : ''}">${agentIcon(p.icon, 24)}</span>
+        <span class="flex-1 min-w-0">
+          <span>${esc(p.name)}</span>
+          ${missing ? `<span class="block text-[10px] text-slate-600 truncate">${esc(p.installCmd || 'Not installed')}</span>` : ''}
+        </span>
+      </button>`;
+  }).join('');
+}
+
 function sortedPresets() {
   const all = [...state.presets].filter(p => {
     const cmd = state.cfg.commands.find(c =>
@@ -101,19 +116,8 @@ export function openCreator() {
         ${FOLDER_SVG}
       </button>
     </div>
-    <div class="space-y-0.5">
-      ${presets.map(p => {
-        const hasConfigured = state.cfg.commands.some(c => binName(c.command) === binName(p.command) && c.enabled !== false);
-        const missing = p.available === false && !hasConfigured;
-        return `
-        <button class="preset-btn w-full flex items-center gap-2.5 px-3 py-2 rounded-md hover:bg-slate-700/70 text-sm transition-colors text-left ${missing ? 'text-slate-500' : 'text-slate-300'}" data-preset="${p.presetId}">
-          <span class="${missing ? 'opacity-40' : ''}">${agentIcon(p.icon, 24)}</span>
-          <span class="flex-1 min-w-0">
-            <span>${esc(p.name)}</span>
-            ${missing ? `<span class="block text-[10px] text-slate-600 truncate">${esc(p.installCmd || 'Not installed')}</span>` : ''}
-          </span>
-        </button>`;
-      }).join('')}
+    <div id="creator-presets" class="space-y-0.5">
+      ${renderPresetButtons()}
     </div>`;
 
   const list = document.getElementById('session-list');
@@ -213,10 +217,8 @@ export function openCreator() {
 }
 
 export function refreshCreator() {
-  if (document.getElementById('session-creator')) {
-    closeCreator();
-    openCreator();
-  }
+  const container = document.getElementById('creator-presets');
+  if (container) container.innerHTML = renderPresetButtons();
 }
 
 export function closeCreator() {
