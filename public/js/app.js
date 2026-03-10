@@ -2,7 +2,7 @@ import { state, send } from './state.js';
 import { esc, binName } from './utils.js';
 import { addTerminal, removeTerminal, select, startRename, startProjectRename, setSessionTheme, openMenu, closeMenu, setStatus, updateMuteIndicator, updatePreview, markUnread, applyFilter, setTab, renderResumable, regroupSessions, toggleProjectCollapse, setSessionProject, estimateSize, restartComplete, positionMenu } from './terminals.js';
 import { renderSettings } from './settings.js';
-import { openCreator, closeCreator } from './creator.js';
+import { openCreator, closeCreator, refreshCreator } from './creator.js';
 import { handleDirsResponse, openFolderPicker } from './folder-picker.js';
 import { confirmClose } from './confirm.js';
 import { applyTheme } from './profiles.js';
@@ -42,6 +42,7 @@ function connect() {
       case 'presets':
         state.presets = msg.presets;
         renderSettings();
+        refreshCreator();
         break;
       case 'sessions.resumable':
         state.resumable = msg.list;

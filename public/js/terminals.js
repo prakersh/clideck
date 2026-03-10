@@ -698,7 +698,7 @@ export function regroupSessions() {
 
     const collapsed = proj.collapsed;
     header.innerHTML = `
-      <div class="group project-header flex items-center gap-1.5 px-2.5 py-1.5 cursor-pointer hover:bg-slate-800/30 transition-colors select-none" data-project-id="${proj.id}">
+      <div class="group project-header flex items-center gap-1.5 px-2.5 py-1.5 cursor-pointer hover:bg-slate-800/30 transition-colors select-none" data-project-id="${proj.id}" style="background:var(--color-project-header-bg)">
         <span class="project-chevron ${collapsed ? 'collapsed' : ''} text-slate-500">${CHEVRON_SVG}</span>
         <span class="w-2 h-2 rounded-full flex-shrink-0" style="background:${projectColor(proj)}"></span>
         <span class="project-name flex-1 text-[11px] font-semibold uppercase tracking-wider text-slate-500 truncate">${esc(proj.name)}</span>
@@ -875,6 +875,7 @@ export function setTab(tab) {
     const base = 'filter-tab flex-1 text-[11px] font-medium py-[5px] rounded-md transition-all';
     const extra = btn.dataset.tab === 'unread' ? ' flex items-center justify-center gap-1' : '';
     btn.className = base + extra + (active ? ' bg-slate-700/60 text-slate-200' : ' text-slate-500 hover:text-slate-400');
+    btn.style.background = !active && btn.dataset.tab === 'unread' ? 'var(--color-filter-unread-bg)' : '';
   });
   applyFilter();
 }

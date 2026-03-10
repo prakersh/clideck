@@ -1,5 +1,6 @@
 const { readFileSync, writeFileSync, mkdirSync, existsSync, copyFileSync, unlinkSync } = require('fs');
 const { join, dirname } = require('path');
+const { execFileSync } = require('child_process');
 const os = require('os');
 const config = require('./config');
 const sessions = require('./sessions');
@@ -9,6 +10,17 @@ const { listDirs, binName, defaultShell } = require('./utils');
 for (const p of presets) if (p.presetId === 'shell') p.command = defaultShell;
 const transcript = require('./transcript');
 const plugins = require('./plugin-loader');
+
+// Check which agent binaries are available on PATH
+const whichCmd = process.platform === 'win32' ? 'where' : 'which';
+function checkAvailability() {
+  for (const p of presets) {
+    if (p.presetId === 'shell') { p.available = true; continue; }
+    try { execFileSync(whichCmd, [binName(p.command)], { stdio: 'ignore' }); p.available = true; }
+    catch { p.available = false; }
+  }
+}
+checkAvailability();
 
 let cfg = config.load();
 if (detectTelemetryConfig(cfg)) config.save(cfg);
@@ -78,6 +90,11 @@ function onConnection(ws) {
 
       case 'config.get':
         ws.send(JSON.stringify({ type: 'config', config: cfg }));
+        break;
+
+      case 'checkAvailability':
+        checkAvailability();
+        ws.send(JSON.stringify({ type: 'presets', presets }));
         break;
 
       case 'config.update':

@@ -2,6 +2,7 @@ import { state, send } from './state.js';
 import { esc, agentIcon, binName } from './utils.js';
 import { openFolderPicker } from './folder-picker.js';
 import { estimateSize } from './terminals.js';
+import { showToast } from './toast.js';
 
 const ADJECTIVES = [
   'Blue', 'Red', 'Green', 'Purple', 'Golden', 'Silver', 'Coral', 'Amber',
@@ -76,6 +77,8 @@ export function openCreator() {
   // Close project creator if open
   document.getElementById('project-creator')?.remove();
   if (!state.presets.length) return;
+  // Recheck binary availability on the server
+  send({ type: 'checkAvailability' });
 
   const fallbackName = randomName();
   const presets = sortedPresets();
@@ -101,11 +104,18 @@ export function openCreator() {
       </button>
     </div>
     <div class="space-y-0.5">
-      ${presets.map(p => `
-        <button class="preset-btn w-full flex items-center gap-2.5 px-3 py-2 rounded-md hover:bg-slate-700/70 text-sm text-slate-300 transition-colors text-left" data-preset="${p.presetId}">
-          ${agentIcon(p.icon, 24)}
-          <span>${esc(p.name)}</span>
-        </button>`).join('')}
+      ${presets.map(p => {
+        const hasConfigured = state.cfg.commands.some(c => binName(c.command) === binName(p.command) && c.enabled !== false);
+        const missing = p.available === false && !hasConfigured;
+        return `
+        <button class="preset-btn w-full flex items-center gap-2.5 px-3 py-2 rounded-md hover:bg-slate-700/70 text-sm transition-colors text-left ${missing ? 'text-slate-500' : 'text-slate-300'}" data-preset="${p.presetId}">
+          <span class="${missing ? 'opacity-40' : ''}">${agentIcon(p.icon, 24)}</span>
+          <span class="flex-1 min-w-0">
+            <span>${esc(p.name)}</span>
+            ${missing ? `<span class="block text-[10px] text-slate-600 truncate">${esc(p.installCmd || 'Not installed')}</span>` : ''}
+          </span>
+        </button>`;
+      }).join('')}
     </div>`;
 
   const list = document.getElementById('session-list');
@@ -187,6 +197,14 @@ export function openCreator() {
     if (!btn) return;
     const preset = state.presets.find(p => p.presetId === btn.dataset.preset);
     if (!preset) return;
+    const hasConfigured = state.cfg.commands.some(c => binName(c.command) === binName(preset.command) && c.enabled !== false);
+    if (preset.available === false && !hasConfigured && preset.installCmd) {
+      navigator.clipboard.writeText(preset.installCmd).then(
+        () => showToast(`Install command copied: <code class="text-slate-200">${esc(preset.installCmd)}</code>`, { html: true, duration: 4000 }),
+        () => showToast(`Run: ${preset.installCmd}`, { duration: 4000 }),
+      );
+      return;
+    }
     const name = nameInput.value.trim() || fallbackName;
     const cwd = cwdInput.value.trim() || undefined;
     const projectSelect = card.querySelector('#creator-project');
@@ -194,6 +212,13 @@ export function openCreator() {
     createFromPreset(preset, name, cwd, projectId);
     closeCreator();
   });
+}
+
+export function refreshCreator() {
+  if (document.getElementById('session-creator')) {
+    closeCreator();
+    openCreator();
+  }
 }
 
 export function closeCreator() {
