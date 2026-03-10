@@ -1,5 +1,5 @@
 import { state, send } from './state.js';
-import { esc, agentIcon, binName } from './utils.js';
+import { esc, agentIcon, findPresetForCommand } from './utils.js';
 import { openFolderPicker } from './folder-picker.js';
 import { estimateSize } from './terminals.js';
 import { showToast } from './toast.js';
@@ -12,7 +12,7 @@ const ANIMALS = [
   'Panda', 'Falcon', 'Fox', 'Wolf', 'Owl', 'Tiger', 'Bear', 'Eagle',
   'Dolphin', 'Lynx', 'Hawk', 'Raven', 'Otter', 'Panther', 'Crane', 'Bison',
 ];
-const MRU_KEY = 'termui-last-preset';
+const MRU_KEY = 'termui-last-command';
 const FOLDER_SVG = `<svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>`;
 
 function randomName() {
@@ -21,66 +21,45 @@ function randomName() {
   return `${a} ${b}`;
 }
 
-function renderPresetButtons() {
-  return sortedPresets().map(p => {
-    const hasConfigured = state.cfg.commands.some(c => binName(c.command) === binName(p.command) && c.enabled !== false);
-    const missing = p.available === false && !hasConfigured;
+function renderCommandButtons() {
+  const commands = sortedCommands();
+  if (!commands.length) {
+    return `<div class="px-3 py-2 text-xs text-slate-500">No enabled commands. Turn one on in Settings.</div>`;
+  }
+  return commands.map(cmd => {
+    const preset = findPresetForCommand(cmd.command, state.presets, cmd.presetId);
+    const missing = preset?.available === false;
+    const subtitle = missing ? (preset.installCmd || 'Not installed') : cmd.command;
     return `
-      <button class="preset-btn w-full flex items-center gap-2.5 px-3 py-2 rounded-md hover:bg-slate-700/70 text-sm transition-colors text-left ${missing ? 'text-slate-500' : 'text-slate-300'}" data-preset="${p.presetId}">
-        <span class="${missing ? 'opacity-40' : ''}">${agentIcon(p.icon, 24)}</span>
+      <button class="command-btn w-full flex items-center gap-2.5 px-3 py-2 rounded-md hover:bg-slate-700/70 text-sm transition-colors text-left ${missing ? 'text-slate-500' : 'text-slate-300'}" data-command-id="${cmd.id}">
+        <span class="${missing ? 'opacity-40' : ''}">${agentIcon(cmd.icon, 24)}</span>
         <span class="flex-1 min-w-0">
-          <span>${esc(p.name)}</span>
-          ${missing ? `<span class="block text-[10px] text-slate-600 truncate">${esc(p.installCmd || 'Not installed')}</span>` : ''}
+          <span class="block truncate">${esc(cmd.label || 'Untitled')}</span>
+          <span class="block text-[10px] text-slate-600 truncate">${esc(subtitle)}</span>
         </span>
       </button>`;
   }).join('');
 }
 
-function sortedPresets() {
-  const all = [...state.presets].filter(p => {
-    const cmd = state.cfg.commands.find(c =>
-      binName(c.command) === binName(p.command)
-    );
-    return !cmd || cmd.enabled !== false;
-  });
-  const shell = all.filter(p => !p.isAgent);
-  const agents = all.filter(p => p.isAgent);
+function sortWithMru(commands) {
   const lastId = localStorage.getItem(MRU_KEY);
   if (lastId) {
-    const idx = agents.findIndex(p => p.presetId === lastId);
-    if (idx > 0) agents.unshift(...agents.splice(idx, 1));
+    const idx = commands.findIndex(cmd => cmd.id === lastId);
+    if (idx > 0) commands.unshift(...commands.splice(idx, 1));
   }
-  return [...agents, ...shell];
+  return commands;
 }
 
-function createFromPreset(preset, sessionName, cwd, projectId) {
-  // Find existing command matching this preset
-  let cmd = state.cfg.commands.find(c =>
-    binName(c.command) === binName(preset.command)
-  );
-  // Auto-create the command if it doesn't exist yet
-  if (!cmd) {
-    cmd = {
-      id: crypto.randomUUID(),
-      label: preset.name,
-      icon: preset.icon,
-      command: preset.command,
-      enabled: true,
-      defaultPath: '',
-      isAgent: preset.isAgent,
-      canResume: preset.canResume,
-      resumeCommand: preset.resumeCommand,
-      sessionIdPattern: preset.sessionIdPattern,
-      outputMarker: preset.outputMarker || null,
-      telemetryEnabled: preset.presetId === 'claude-code',
-      telemetryStatus: preset.presetId === 'claude-code' ? { ok: true } : null,
-      bridge: preset.bridge,
-    };
-    state.cfg.commands.push(cmd);
-    send({ type: 'config.update', config: state.cfg });
-  }
+function sortedCommands() {
+  const enabled = [...state.cfg.commands].filter(cmd => cmd.enabled !== false);
+  const agents = sortWithMru(enabled.filter(cmd => cmd.isAgent));
+  const others = sortWithMru(enabled.filter(cmd => !cmd.isAgent));
+  return [...agents, ...others];
+}
+
+function createFromCommand(cmd, sessionName, cwd, projectId) {
   send({ type: 'create', commandId: cmd.id, name: sessionName, cwd, projectId: projectId || undefined, ...estimateSize() });
-  localStorage.setItem(MRU_KEY, preset.presetId);
+  localStorage.setItem(MRU_KEY, cmd.id);
 }
 
 export function openCreator() {
@@ -91,10 +70,9 @@ export function openCreator() {
   }
   // Close project creator if open
   document.getElementById('project-creator')?.remove();
-  if (!state.presets.length) return;
+  if (!state.cfg.commands.length) return;
 
   const fallbackName = randomName();
-  const presets = sortedPresets();
   const defaultPath = state.cfg.defaultPath || '';
 
   const card = document.createElement('div');
@@ -117,7 +95,7 @@ export function openCreator() {
       </button>
     </div>
     <div id="creator-presets" class="space-y-0.5">
-      ${renderPresetButtons()}
+      ${renderCommandButtons()}
     </div>`;
 
   const list = document.getElementById('session-list');
@@ -195,12 +173,12 @@ export function openCreator() {
   }
 
   card.addEventListener('click', (e) => {
-    const btn = e.target.closest('.preset-btn');
+    const btn = e.target.closest('.command-btn');
     if (!btn) return;
-    const preset = state.presets.find(p => p.presetId === btn.dataset.preset);
-    if (!preset) return;
-    const hasConfigured = state.cfg.commands.some(c => binName(c.command) === binName(preset.command) && c.enabled !== false);
-    if (preset.available === false && !hasConfigured && preset.installCmd) {
+    const cmd = state.cfg.commands.find(command => command.id === btn.dataset.commandId);
+    if (!cmd) return;
+    const preset = findPresetForCommand(cmd.command, state.presets, cmd.presetId);
+    if (preset?.available === false && preset.installCmd) {
       navigator.clipboard.writeText(preset.installCmd).then(
         () => showToast(`Install command copied: <code class="text-slate-200">${esc(preset.installCmd)}</code>`, { html: true, duration: 4000 }),
         () => showToast(`Run: ${preset.installCmd}`, { duration: 4000 }),
@@ -211,14 +189,14 @@ export function openCreator() {
     const cwd = cwdInput.value.trim() || undefined;
     const projectSelect = card.querySelector('#creator-project');
     const projectId = projectSelect?.value || undefined;
-    createFromPreset(preset, name, cwd, projectId);
+    createFromCommand(cmd, name, cwd, projectId);
     closeCreator();
   });
 }
 
 export function refreshCreator() {
   const container = document.getElementById('creator-presets');
-  if (container) container.innerHTML = renderPresetButtons();
+  if (container) container.innerHTML = renderCommandButtons();
 }
 
 export function closeCreator() {

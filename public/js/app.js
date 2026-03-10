@@ -1,5 +1,5 @@
 import { state, send } from './state.js';
-import { esc, binName } from './utils.js';
+import { esc, findPresetForCommand } from './utils.js';
 import { addTerminal, removeTerminal, select, startRename, startProjectRename, setSessionTheme, openMenu, closeMenu, setStatus, updateMuteIndicator, updatePreview, markUnread, applyFilter, setTab, renderResumable, regroupSessions, toggleProjectCollapse, setSessionProject, estimateSize, restartComplete, positionMenu } from './terminals.js';
 import { renderSettings } from './settings.js';
 import { openCreator, closeCreator, refreshCreator } from './creator.js';
@@ -33,6 +33,7 @@ function connect() {
         regroupSessions();
         renderSettings();
         renderPrompts();
+        refreshCreator();
         for (const [, entry] of state.terms) applyTheme(entry.term, entry.themeId);
         break;
       case 'themes':
@@ -211,15 +212,24 @@ function connect() {
   state.ws.onclose = () => setTimeout(connect, 1000);
 }
 
-// Mobile sidebar
-const mobileQuery = window.matchMedia('(max-width: 960px)');
-function closeMobileSidebar() { document.body.classList.remove('mobile-nav-open'); }
-document.getElementById('mobile-nav-toggle').addEventListener('click', () => {
-  if (mobileQuery.matches) document.body.classList.toggle('mobile-nav-open');
-});
+const mobileSidebarQuery = window.matchMedia('(max-width: 960px)');
+
+function closeMobileSidebar() {
+  document.body.classList.remove('mobile-nav-open');
+}
+
+function toggleMobileSidebar(force) {
+  if (!mobileSidebarQuery.matches) return;
+  const next = force ?? !document.body.classList.contains('mobile-nav-open');
+  document.body.classList.toggle('mobile-nav-open', next);
+}
+
+document.getElementById('mobile-nav-toggle').addEventListener('click', () => toggleMobileSidebar());
 document.getElementById('mobile-nav-close').addEventListener('click', closeMobileSidebar);
 document.getElementById('mobile-sidebar-backdrop').addEventListener('click', closeMobileSidebar);
-mobileQuery.addEventListener('change', (e) => { if (!e.matches) closeMobileSidebar(); });
+mobileSidebarQuery.addEventListener('change', (e) => {
+  if (!e.matches) closeMobileSidebar();
+});
 
 // Sidebar events
 const sessionList = document.getElementById('session-list');
@@ -336,8 +346,8 @@ function showTelemetrySetup(commandId, sessionId) {
   if (!cmd) return;
   // Skip if telemetry is already configured via settings
   if (cmd.telemetryEnabled && cmd.telemetryStatus?.ok) return;
-  const bin = binName(cmd.command);
-  const preset = state.presets.find(p => binName(p.command) === bin);
+  const preset = findPresetForCommand(cmd.command, state.presets, cmd.presetId);
+  if (!preset) return;
   const setupRaw = preset.telemetrySetup || preset.pluginSetup;
   if (!setupRaw || shownSetup.has(preset.presetId)) return;
   shownSetup.add(preset.presetId);
@@ -681,14 +691,10 @@ function renderPluginsPanel(list) {
     const open = !!expanded[p.id];
     return `
     <div class="plugin-card ${i > 0 ? 'border-t border-slate-700/50' : ''}">
-      <button class="plugin-toggle w-full px-4 py-3 text-left hover:bg-slate-800/50 transition-colors" data-plugin-id="${esc(p.id)}">
-        <div class="flex items-center gap-2">
-          <span class="flex-1 text-sm font-medium text-slate-200">${esc(p.name)}</span>
-          <span class="text-[10px] text-slate-500">v${esc(p.version)}</span>
-          <svg class="plugin-chevron w-4 h-4 text-slate-500 transition-transform duration-200 flex-shrink-0 ${open ? '' : 'collapsed'}" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path d="M19 9l-7 7-7-7"/></svg>
-        </div>
-        ${p.description ? `<p class="text-[11px] text-slate-500 mt-0.5 leading-snug">${esc(p.description)}</p>` : ''}
-        ${p.author ? `<p class="text-[10px] text-slate-600 mt-0.5" style="text-align:right">${esc(p.author)}</p>` : ''}
+      <button class="plugin-toggle w-full flex items-center gap-2 px-4 py-3 text-left hover:bg-slate-800/50 transition-colors" data-plugin-id="${esc(p.id)}">
+        <span class="flex-1 text-sm font-medium text-slate-200">${esc(p.name)}</span>
+        <span class="text-[10px] text-slate-500">v${esc(p.version)}</span>
+        <svg class="plugin-chevron w-4 h-4 text-slate-500 transition-transform duration-200 ${open ? '' : 'collapsed'}" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path d="M19 9l-7 7-7-7"/></svg>
       </button>
       <div class="plugin-body ${open ? '' : 'hidden'}">
         <div class="px-4 pb-3">

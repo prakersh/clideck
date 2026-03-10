@@ -1,5 +1,5 @@
 import { state, send } from './state.js';
-import { esc, debounce, agentIcon, binName } from './utils.js';
+import { esc, debounce, agentIcon, findPresetForCommand } from './utils.js';
 import { openFolderPicker } from './folder-picker.js';
 
 // ── Category navigation ──
@@ -95,8 +95,7 @@ function openIconPicker(triggerEl, cardIdx) {
 }
 
 function telemetryPreset(cmd) {
-  const bin = binName(cmd.command);
-  return (state.presets || []).find(p => binName(p.command) === bin);
+  return findPresetForCommand(cmd.command, state.presets || [], cmd.presetId);
 }
 
 function integrationSection(c) {
@@ -141,7 +140,8 @@ function integrationSection(c) {
 
 function renderAgentList() {
   document.getElementById('agent-list').innerHTML = state.cfg.commands.map((c, i) => {
-    const isBuiltIn = !!telemetryPreset(c);
+    const preset = telemetryPreset(c);
+    const isBuiltIn = !!preset && c.command === preset.command;
     return `
     <div class="agent-card p-4 bg-slate-800/50 border border-slate-700/50 rounded-lg" data-idx="${i}">
       <div class="flex items-center gap-3 mb-3">
@@ -158,6 +158,7 @@ function renderAgentList() {
       <div class="mb-3">
         <label class="block text-xs text-slate-500 mb-1">Command</label>
         <input type="text" value="${esc(c.command)}" class="agent-command w-full px-2 py-1.5 text-sm bg-slate-900 border border-slate-700 rounded text-slate-200 placeholder-slate-500 outline-none focus:border-blue-500 transition-colors font-mono" placeholder="e.g. claude, codex, gemini">
+        ${c.autoDetected ? `<div class="mt-1 text-[11px] text-slate-600">Auto-detected from ${esc(c.shellAliasSource || 'your shell config')}</div>` : ''}
       </div>
       <div class="mb-3">
         <label class="flex items-center gap-2 text-sm text-slate-300 cursor-pointer select-none">
@@ -225,6 +226,7 @@ function openPresetMenu(anchorEl) {
         enabled: true, defaultPath: '', isAgent: false, canResume: false,
         resumeCommand: null, sessionIdPattern: null,
         telemetryEnabled: false, telemetryStatus: null,
+        presetId: null, autoDetected: false,
       });
     } else {
       const p = presets.find(x => x.presetId === presetId);
@@ -236,6 +238,7 @@ function openPresetMenu(anchorEl) {
         telemetryEnabled: p.presetId === 'claude-code',
         telemetryStatus: p.presetId === 'claude-code' ? { ok: true } : null,
         bridge: p.bridge,
+        presetId: p.presetId, autoDetected: false,
       });
     }
     renderAgentList();
@@ -440,7 +443,8 @@ function saveConfig() {
   state.cfg.commands = [...agentCards].map((card, i) => {
     const existing = state.cfg.commands[i] || {};
     const command = card.querySelector('.agent-command').value.trim() || state.cfg.defaultShell || '/bin/zsh';
-    const isClaude = binName(command) === 'claude';
+    const preset = findPresetForCommand(command, state.presets || [], existing.presetId);
+    const isClaude = preset?.presetId === 'claude-code';
     return {
       id: existing.id || crypto.randomUUID(),
       label: card.querySelector('.agent-name').value.trim() || 'Untitled',
@@ -453,9 +457,14 @@ function saveConfig() {
       resumeCommand: card.querySelector('.agent-resume-cmd')?.value.trim() || null,
       sessionIdPattern: existing.sessionIdPattern || null,
       outputMarker: existing.outputMarker || null,
+      presetId: existing.presetId || null,
       telemetryEnabled: isClaude ? true : (existing.telemetryEnabled || false),
       telemetryStatus: isClaude ? { ok: true } : (existing.telemetryStatus || null),
       bridge: existing.bridge,
+      autoDetected: existing.autoDetected,
+      shellAlias: existing.shellAlias,
+      shellAliasShell: existing.shellAliasShell,
+      shellAliasSource: existing.shellAliasSource,
     };
   });
 

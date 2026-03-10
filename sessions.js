@@ -1,7 +1,12 @@
 const pty = require('node-pty');
 const { readFileSync, writeFileSync, existsSync } = require('fs');
 const { join } = require('path');
-const { parseCommand, resolveValidDir, defaultShell, binName } = require('./utils');
+const { resolveValidDir, defaultShell, binName } = require('./utils');
+const {
+  findPresetForCommand,
+  getPresets,
+  parseSpawnCommand,
+} = require('./agent-registry');
 const activity = require('./activity');
 const transcript = require('./transcript');
 const telemetry = require('./telemetry-receiver');
@@ -12,8 +17,7 @@ const THEMES = require('./themes');
 const MAX_BUFFER = 200 * 1024;
 const PORT = 4000;
 const ANSI_RE = /\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b\].*?(?:\x07|\x1b\\)|\x1b./g;
-const PRESETS = JSON.parse(require('fs').readFileSync(join(__dirname, 'agent-presets.json'), 'utf8'));
-for (const p of PRESETS) if (p.presetId === 'shell') p.command = defaultShell;
+const PRESETS = getPresets();
 const { DATA_DIR } = require('./paths');
 const SAVED_PATH = join(DATA_DIR, 'sessions.json');
 const sessions = new Map();
@@ -31,8 +35,7 @@ function broadcast(msg) {
 // --- Spawn a PTY and wire up a session ---
 
 function buildTelemetryEnv(id, cmd) {
-  const bin = binName(cmd.command);
-  const preset = PRESETS.find(p => binName(p.command) === bin);
+  const preset = findPresetForCommand(cmd.command);
   const telemetryEnabled = cmd.telemetryEnabled ?? (preset?.presetId === 'claude-code');
   if (!preset?.telemetryEnv || !telemetryEnabled) return {};
   const env = {};
@@ -71,9 +74,9 @@ function spawnSession(id, cmd, parts, cwd, name, themeId, commandId, savedToken,
   sessions.set(id, session);
 
   // Watch for telemetry — if config isn't set up, frontend will prompt
-  const bin = binName(cmd.command);
-  const preset = PRESETS.find(p => binName(p.command) === bin);
-  if (preset?.telemetrySetup && !(cmd.telemetryEnabled && cmd.telemetryStatus?.ok)) telemetry.watchSession(id, bin);
+  const preset = findPresetForCommand(cmd.command);
+  const watchBin = preset ? binName(preset.command) : binName(cmd.command);
+  if (preset?.telemetrySetup && !(cmd.telemetryEnabled && cmd.telemetryStatus?.ok)) telemetry.watchSession(id, watchBin);
   if (preset?.bridge === 'opencode') opencodeBridge.watchSession(id, cwd);
 
   term.onData((data) => {
@@ -119,7 +122,7 @@ function create(msg, ws, cfg) {
   const cmd = cfg.commands.find(c => c.id === msg.commandId)
     || cfg.commands[0]
     || { label: 'Shell', command: defaultShell };
-  const parts = parseCommand(cmd.command);
+  const parts = parseSpawnCommand(cmd.command);
   const cwd = resolveValidDir(msg.cwd || cmd.defaultPath || cfg.defaultPath);
   const themeId = msg.themeId || cfg.defaultTheme || 'default';
   const name = msg.name || cmd.label;
@@ -135,8 +138,7 @@ function create(msg, ws, cfg) {
   broadcast({ type: 'created', id, name, themeId, commandId: cmd.id, projectId });
 
   // Immediate setup notification if config not detected
-  const bin = binName(cmd.command);
-  const preset = PRESETS.find(p => binName(p.command) === bin);
+  const preset = findPresetForCommand(cmd.command);
   if (preset && (preset.telemetrySetup || preset.bridge) && !(cmd.telemetryEnabled && cmd.telemetryStatus?.ok)) {
     broadcast({ type: 'session.needsSetup', id });
   }
@@ -167,7 +169,7 @@ function resume(msg, ws, cfg) {
     resumeStr = resumeStr.replace('{{sessionId}}', saved.sessionToken);
   }
 
-  const parts = parseCommand(resumeStr);
+  const parts = parseSpawnCommand(resumeStr);
   const cwd = resolveValidDir(saved.cwd || cfg.defaultPath);
   const id = saved.id;
 
@@ -239,9 +241,9 @@ function restart(msg, ws, cfg) {
 
   let parts;
   if (canResume) {
-    parts = parseCommand(cmd.resumeCommand.replace('{{sessionId}}', s.sessionToken));
+    parts = parseSpawnCommand(cmd.resumeCommand.replace('{{sessionId}}', s.sessionToken));
   } else {
-    parts = parseCommand(cmd.command);
+    parts = parseSpawnCommand(cmd.command);
   }
   console.log('[restart] parts=', parts);
 

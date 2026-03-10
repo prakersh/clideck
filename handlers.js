@@ -5,24 +5,45 @@ const os = require('os');
 const config = require('./config');
 const sessions = require('./sessions');
 const themes = require('./themes');
-const presets = JSON.parse(readFileSync(join(__dirname, 'agent-presets.json'), 'utf8'));
-const { listDirs, binName, defaultShell } = require('./utils');
-for (const p of presets) if (p.presetId === 'shell') p.command = defaultShell;
+const { listDirs, binName } = require('./utils');
+const {
+  findPresetForCommand,
+  getAliasesForPreset,
+  getPresets,
+  refreshAgentRegistry,
+  usesPreset,
+} = require('./agent-registry');
 const transcript = require('./transcript');
 const plugins = require('./plugin-loader');
+
+const presets = getPresets();
 
 // Check which agent binaries are available on PATH
 const whichCmd = process.platform === 'win32' ? 'where' : 'which';
 function checkAvailability() {
+  refreshAgentRegistry();
   for (const p of presets) {
     if (p.presetId === 'shell') { p.available = true; continue; }
-    try { execFileSync(whichCmd, [binName(p.command)], { stdio: 'ignore' }); p.available = true; }
-    catch { p.available = false; }
+    if (getAliasesForPreset(p.presetId).length) { p.available = true; continue; }
+    try {
+      execFileSync(whichCmd, [binName(p.command)], { stdio: 'ignore' });
+      p.available = true;
+    } catch {
+      p.available = false;
+    }
+  }
+
+  if (!cfg) return;
+  const normalized = config.normalize(cfg, { discoverAliases: true });
+  if (JSON.stringify(normalized) !== JSON.stringify(cfg)) {
+    cfg = normalized;
+    config.save(cfg);
+    sessions.broadcast({ type: 'config', config: cfg });
   }
 }
-checkAvailability();
 
 let cfg = config.load();
+checkAvailability();
 if (detectTelemetryConfig(cfg)) config.save(cfg);
 
 function detectTelemetryConfig(c) {
@@ -30,8 +51,7 @@ function detectTelemetryConfig(c) {
   const port = '4000';
   let changed = false;
   for (const cmd of c.commands || []) {
-    const bin = binName(cmd.command);
-    const preset = presets.find(p => binName(p.command) === bin);
+    const preset = findPresetForCommand(cmd.command);
     if (!preset) continue;
     let detected = false;
     if (preset.presetId === 'claude-code') {
@@ -98,7 +118,7 @@ function onConnection(ws) {
         break;
 
       case 'config.update':
-        cfg = { ...cfg, ...msg.config };
+        cfg = config.normalize({ ...cfg, ...msg.config });
         detectTelemetryConfig(cfg);
         config.save(cfg);
         sessions.broadcast({ type: 'config', config: cfg });
@@ -117,13 +137,13 @@ function onConnection(ws) {
         const liveSessions = sessions.list();
         const hasLive = liveSessions.some(s => {
           const cmd = cfg.commands.find(c => c.id === s.commandId);
-          return cmd && binName(cmd.command) === binName(preset.command);
+          return cmd && usesPreset(cmd.command, preset.presetId);
         });
         if (!hasLive) break;
         const result = applyTelemetryConfig(preset);
         // Persist telemetry state in config
         for (const cmd of cfg.commands) {
-          if (binName(cmd.command) === binName(preset.command)) {
+          if (usesPreset(cmd.command, preset.presetId)) {
             cmd.telemetryEnabled = result.success;
             cmd.telemetryStatus = result.success ? { ok: true } : { ok: false, error: result.message };
           }
@@ -151,7 +171,7 @@ function onConnection(ws) {
         }
         // Update all matching commands in config
         for (const cmd of cfg.commands) {
-          if (binName(cmd.command) === binName(preset.command)) {
+          if (usesPreset(cmd.command, preset.presetId)) {
             cmd.telemetryEnabled = enable && result.success;
             cmd.telemetryStatus = enable
               ? (result.success ? { ok: true } : { ok: false, error: result.message })

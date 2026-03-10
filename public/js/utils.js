@@ -4,6 +4,15 @@ export function binName(command) {
   return exec.split(/[\\/]/).pop().split(/\s/)[0].replace(/\.(exe|cmd)$/i, '');
 }
 
+export function findPresetForCommand(command, presets = [], presetId = null) {
+  if (presetId) {
+    const exact = presets.find(p => p.presetId === presetId);
+    if (exact) return exact;
+  }
+  const bin = binName(command || '');
+  return presets.find(p => binName(p.command) === bin) || null;
+}
+
 export function esc(s) {
   return s.replace(/[&<>"']/g, c => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[c]));
 }
