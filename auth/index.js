@@ -30,16 +30,28 @@ function isLoopbackRequest(req) {
   return remote === '127.0.0.1' || remote === '::1';
 }
 
+function getCredentialPair(usernameEnv, passwordEnv) {
+  const rawUsername = process.env[usernameEnv];
+  const rawPassword = process.env[passwordEnv];
+  const username = typeof rawUsername === 'string' ? rawUsername.trim() : '';
+  const password = typeof rawPassword === 'string' ? rawPassword : '';
+
+  if (!username || !password) return null;
+  return { username, password };
+}
+
 function getBootstrapCredentials() {
-  const username = process.env.CLIDECK_USERNAME || process.env.USERNAME || 'admin';
-  const password = process.env.CLIDECK_PASSWORD || process.env.PASSWORD || 'beegu';
-  const explicit = Boolean(
-    process.env.CLIDECK_USERNAME
-    || process.env.USERNAME
-    || process.env.CLIDECK_PASSWORD
-    || process.env.PASSWORD
-  );
-  return { username, password, explicit };
+  const clideckPair = getCredentialPair('CLIDECK_USERNAME', 'CLIDECK_PASSWORD');
+  if (clideckPair) {
+    return { ...clideckPair, explicit: true };
+  }
+
+  const legacyPair = getCredentialPair('USERNAME', 'PASSWORD');
+  if (legacyPair) {
+    return { ...legacyPair, explicit: true };
+  }
+
+  return { username: 'admin', password: 'beegu905', explicit: false };
 }
 
 function getBootstrapPolicy(req) {

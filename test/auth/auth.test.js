@@ -37,7 +37,7 @@ test('local bootstrap only accepts deterministic default credentials', async () 
 
   const login = await postJson(server, '/auth/login', {
     username: 'admin',
-    password: 'beegu',
+    password: 'beegu905',
   });
   assert.equal(login.status, 200);
 
@@ -70,7 +70,7 @@ test('security headers and plugin auth gate are applied', async () => {
 
   const login = await postJson(server, '/auth/login', {
     username: 'admin',
-    password: 'beegu',
+    password: 'beegu905',
   });
   const cookie = getCookie(login);
   const pluginAllowed = await get(server, '/plugins/voice-input/client.js', {
@@ -83,7 +83,7 @@ test('security headers and plugin auth gate are applied', async () => {
 test('logout revokes the cookie and ingress token is persisted locally', async () => {
   const login = await postJson(server, '/auth/login', {
     username: 'admin',
-    password: 'beegu',
+    password: 'beegu905',
   });
   const cookie = getCookie(login);
 
@@ -131,7 +131,29 @@ test('public mode requires explicit bootstrap credentials', async () => {
   try {
     const login = await postJson(isolated, '/auth/login', {
       username: 'admin',
-      password: 'beegu',
+      password: 'beegu905',
+    });
+    assert.equal(login.status, 503);
+    assert.match((await login.json()).error, /Bootstrap credentials must be configured/);
+  } finally {
+    await stopServer(isolated);
+  }
+});
+
+test('public mode does not treat a lone USERNAME as explicit bootstrap credentials', async () => {
+  const isolated = await startServer(4106, {
+    env: {
+      CLIDECK_PUBLIC_MODE: '1',
+      USERNAME: 'owner',
+      PASSWORD: '',
+      CLIDECK_USERNAME: '',
+      CLIDECK_PASSWORD: '',
+    },
+  });
+  try {
+    const login = await postJson(isolated, '/auth/login', {
+      username: 'owner',
+      password: 'swordfish',
     });
     assert.equal(login.status, 503);
     assert.match((await login.json()).error, /Bootstrap credentials must be configured/);
@@ -151,7 +173,7 @@ test('explicit bootstrap env overrides the local fallback and secure cookies can
   try {
     const denied = await postJson(isolated, '/auth/login', {
       username: 'admin',
-      password: 'beegu',
+      password: 'beegu905',
     });
     assert.equal(denied.status, 401);
 
