@@ -241,6 +241,8 @@ function getInfo() {
     id: p.manifest.id,
     name: p.manifest.name,
     version: p.manifest.version,
+    author: p.manifest.author || '',
+    description: p.manifest.description || '',
     settings: p.manifest.settings || [],
     settingValues: cfg?.pluginSettings?.[p.manifest.id] || {},
     actions: p.actions,

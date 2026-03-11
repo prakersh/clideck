@@ -56,6 +56,7 @@ function connect() {
         if (!state.terms.has(msg.id)) addTerminal(msg.id, msg.name, msg.themeId, msg.commandId, msg.projectId, msg.muted, msg.lastPreview);
         select(msg.id);
         applyFilter();
+        closeMobileSidebar();
         break;
       case 'output': {
         const entry = state.terms.get(msg.id);
@@ -210,6 +211,16 @@ function connect() {
   state.ws.onclose = () => setTimeout(connect, 1000);
 }
 
+// Mobile sidebar
+const mobileQuery = window.matchMedia('(max-width: 960px)');
+function closeMobileSidebar() { document.body.classList.remove('mobile-nav-open'); }
+document.getElementById('mobile-nav-toggle').addEventListener('click', () => {
+  if (mobileQuery.matches) document.body.classList.toggle('mobile-nav-open');
+});
+document.getElementById('mobile-nav-close').addEventListener('click', closeMobileSidebar);
+document.getElementById('mobile-sidebar-backdrop').addEventListener('click', closeMobileSidebar);
+mobileQuery.addEventListener('change', (e) => { if (!e.matches) closeMobileSidebar(); });
+
 // Sidebar events
 const sessionList = document.getElementById('session-list');
 
@@ -240,6 +251,7 @@ sessionList.addEventListener('click', (e) => {
   const resumableRow = e.target.closest('[data-resumable-id]');
   if (resumableRow) {
     send({ type: 'session.resume', id: resumableRow.dataset.resumableId });
+    closeMobileSidebar();
     return;
   }
 
@@ -253,6 +265,7 @@ sessionList.addEventListener('click', (e) => {
   }
 
   select(item.dataset.id);
+  closeMobileSidebar();
 });
 
 sessionList.addEventListener('dblclick', (e) => {
@@ -668,10 +681,14 @@ function renderPluginsPanel(list) {
     const open = !!expanded[p.id];
     return `
     <div class="plugin-card ${i > 0 ? 'border-t border-slate-700/50' : ''}">
-      <button class="plugin-toggle w-full flex items-center gap-2 px-4 py-3 text-left hover:bg-slate-800/50 transition-colors" data-plugin-id="${esc(p.id)}">
-        <span class="flex-1 text-sm font-medium text-slate-200">${esc(p.name)}</span>
-        <span class="text-[10px] text-slate-500">v${esc(p.version)}</span>
-        <svg class="plugin-chevron w-4 h-4 text-slate-500 transition-transform duration-200 ${open ? '' : 'collapsed'}" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path d="M19 9l-7 7-7-7"/></svg>
+      <button class="plugin-toggle w-full px-4 py-3 text-left hover:bg-slate-800/50 transition-colors" data-plugin-id="${esc(p.id)}">
+        <div class="flex items-center gap-2">
+          <span class="flex-1 text-sm font-medium text-slate-200">${esc(p.name)}</span>
+          <span class="text-[10px] text-slate-500">v${esc(p.version)}</span>
+          <svg class="plugin-chevron w-4 h-4 text-slate-500 transition-transform duration-200 flex-shrink-0 ${open ? '' : 'collapsed'}" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path d="M19 9l-7 7-7-7"/></svg>
+        </div>
+        ${p.description ? `<p class="text-[11px] text-slate-500 mt-0.5 leading-snug">${esc(p.description)}</p>` : ''}
+        ${p.author ? `<p class="text-[10px] text-slate-600 mt-0.5" style="text-align:right">${esc(p.author)}</p>` : ''}
       </button>
       <div class="plugin-body ${open ? '' : 'hidden'}">
         <div class="px-4 pb-3">

@@ -1,7 +1,9 @@
 {
   "id": "voice-input",
   "name": "Voice Input",
-  "version": "1.1.0",
+  "version": "1.2.0",
+  "author": "CliDeck",
+  "description": "Dictate prompts with your voice using Whisper speech-to-text",
   "settings": [
     {
       "key": "enabled",
