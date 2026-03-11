@@ -250,6 +250,7 @@ function truncate(s, n) {
 // Trigger detection: let the first / go to the terminal immediately (no lag).
 // If a second / arrives within 300ms, erase the first / with backspace and open autocomplete.
 let lastSlashTime = 0;
+let lastKeyWasPrintable = false;
 
 export function handleTerminalKey(e) {
   if (e.type !== 'keydown') return true;
@@ -303,23 +304,32 @@ export function handleTerminalKey(e) {
     return false;
   }
 
-  // Detect // trigger — first / goes through normally, second / within 300ms activates
+  // Detect // trigger — first / goes through normally, second / within 300ms activates.
+  // Suppress if a non-whitespace character was typed just before the first / (e.g. s//, ://).
+  // This is a key-history heuristic, not a true terminal-state check.
   if (e.key === '/' && !e.ctrlKey && !e.metaKey && !e.altKey && getPrompts().length > 0) {
     const now = Date.now();
     if (now - lastSlashTime < 300) {
       // Second / — erase the first / from terminal, open autocomplete
       lastSlashTime = 0;
+      lastKeyWasPrintable = false;
       e.preventDefault();
       if (state.active) send({ type: 'input', id: state.active, data: '\x7f' }); // backspace to remove first /
       showDropdown();
       return false;
     }
-    // First / — let it through, record time
-    lastSlashTime = now;
+    // First / — only start timer if previous key wasn't a non-whitespace character
+    if (!lastKeyWasPrintable) {
+      lastSlashTime = now;
+    }
+    // / is itself a non-whitespace char — keep the flag hot so s/// doesn't trigger on 3rd slash
+    lastKeyWasPrintable = true;
     return true;
   }
 
   // Any other key resets the slash timer
   lastSlashTime = 0;
+  // Track non-whitespace printable keys; whitespace (space, tab) should not block standalone //
+  lastKeyWasPrintable = e.key.length === 1 && e.key.trim() !== '' && !e.ctrlKey && !e.metaKey && !e.altKey;
   return true;
 }
