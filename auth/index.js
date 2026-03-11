@@ -10,6 +10,53 @@ const SESSION_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 const SESSION_REVALIDATE_MS = 60 * 1000;
 const INGRESS_HEADER = 'x-clideck-ingress';
 const INGRESS_TOKEN_PATH = join(DATA_DIR, 'ingress-token');
+const TRUE_VALUES = new Set(['1', 'true', 'yes', 'on']);
+const LOOPBACK_HOST_RE = /^(localhost|127(?:\.\d{1,3}){3}|\[::1\])(?::\d+)?$/i;
+
+function envFlag(name) {
+  return TRUE_VALUES.has(String(process.env[name] || '').toLowerCase());
+}
+
+function requestProtocol(req) {
+  const forwarded = String(req?.headers?.['x-forwarded-proto'] || '').split(',')[0].trim().toLowerCase();
+  if (forwarded) return forwarded;
+  return req?.socket?.encrypted ? 'https' : 'http';
+}
+
+function isLoopbackRequest(req) {
+  const host = String(req?.headers?.host || '').trim().toLowerCase();
+  if (LOOPBACK_HOST_RE.test(host)) return true;
+  const remote = String(req?.socket?.remoteAddress || '').replace(/^::ffff:/, '');
+  return remote === '127.0.0.1' || remote === '::1';
+}
+
+function getBootstrapCredentials() {
+  const username = process.env.CLIDECK_USERNAME || process.env.USERNAME || 'admin';
+  const password = process.env.CLIDECK_PASSWORD || process.env.PASSWORD || 'beegu';
+  const explicit = Boolean(
+    process.env.CLIDECK_USERNAME
+    || process.env.USERNAME
+    || process.env.CLIDECK_PASSWORD
+    || process.env.PASSWORD
+  );
+  return { username, password, explicit };
+}
+
+function getBootstrapPolicy(req) {
+  const credentials = getBootstrapCredentials();
+  const publicMode = envFlag('CLIDECK_PUBLIC_MODE');
+  const localFallbackAllowed = !publicMode && isLoopbackRequest(req);
+  return {
+    ...credentials,
+    publicMode,
+    localFallbackAllowed,
+    allowed: credentials.explicit || localFallbackAllowed,
+  };
+}
+
+function shouldUseSecureCookies(req) {
+  return envFlag('CLIDECK_SECURE_COOKIES') || requestProtocol(req) === 'https';
+}
 
 function parseCookie(header = '') {
   const cookies = Object.create(null);
@@ -182,34 +229,43 @@ function revokeSession(token) {
   db.prepare('UPDATE auth_sessions SET revoked_at = ? WHERE token_hash = ?').run(Date.now(), hashToken(token));
 }
 
-function setSessionCookie(res, token) {
+function setSessionCookie(res, token, req) {
   res.setHeader('Set-Cookie', serializeCookie(COOKIE_NAME, token, {
     httpOnly: true,
     sameSite: 'Strict',
     path: '/',
     maxAge: SESSION_TTL_MS / 1000,
     expires: new Date(Date.now() + SESSION_TTL_MS),
+    secure: shouldUseSecureCookies(req),
   }));
 }
 
-function clearSessionCookie(res) {
+function clearSessionCookie(res, req) {
   res.setHeader('Set-Cookie', serializeCookie(COOKIE_NAME, '', {
     httpOnly: true,
     sameSite: 'Strict',
     path: '/',
     maxAge: 0,
     expires: new Date(0),
+    secure: shouldUseSecureCookies(req),
   }));
 }
 
 function getSessionResponse(req, { touch = true } = {}) {
   const session = validateRequest(req, { touch });
+  const bootstrap = getBootstrapPolicy(req);
   if (!session) {
-    return { authenticated: false, setupRequired: !hasUsers(), session: null };
+    return {
+      authenticated: false,
+      setupRequired: !hasUsers(),
+      bootstrap,
+      session: null,
+    };
   }
   return {
     authenticated: true,
     setupRequired: false,
+    bootstrap,
     session,
   };
 }
@@ -230,6 +286,7 @@ module.exports = {
   authenticateUser,
   clearSessionCookie,
   createInitialUser,
+  getBootstrapPolicy,
   getIngressToken,
   getSessionCookie,
   getSessionResponse,
@@ -240,6 +297,7 @@ module.exports = {
   refreshSocketAuth,
   revokeSession,
   setSessionCookie,
+  shouldUseSecureCookies,
   validateRequest,
   validateSessionToken,
 };

@@ -1,5 +1,6 @@
-const { appendFile, mkdirSync, existsSync, readdirSync, readFileSync, unlinkSync } = require('fs');
+const { existsSync, readdirSync, readFileSync } = require('fs');
 const { join, basename } = require('path');
+const { openDb } = require('./db');
 const { DATA_DIR } = require('./paths');
 
 const DIR = join(DATA_DIR, 'transcripts');
@@ -11,27 +12,78 @@ const outputBuf = {};
 const cache = {};
 let broadcast = null;
 
-function init(bc, validIds) {
-  broadcast = bc;
-  if (!existsSync(DIR)) mkdirSync(DIR, { recursive: true });
-  for (const file of readdirSync(DIR).filter(f => f.endsWith('.jsonl'))) {
-    const id = basename(file, '.jsonl');
-    if (validIds && !validIds.has(id)) { try { unlinkSync(join(DIR, file)); } catch {} continue; }
-    try {
-      const lines = readFileSync(join(DIR, file), 'utf8').trim().split('\n');
-      cache[id] = lines.map(l => { try { return JSON.parse(l).text; } catch { return ''; } }).join('\n');
-      if (cache[id].length > MAX_CACHE) cache[id] = cache[id].slice(-MAX_CACHE);
-    } catch {}
+function trimCache(id) {
+  if (cache[id]?.length > MAX_CACHE) cache[id] = cache[id].slice(-MAX_CACHE);
+}
+
+function clearInvalidEntries(validIds) {
+  if (!validIds) return;
+  const db = openDb();
+  if (!validIds.size) {
+    db.prepare('DELETE FROM transcript_entries').run();
+    return;
+  }
+  const ids = [...validIds];
+  const placeholders = ids.map(() => '?').join(', ');
+  db.prepare(`DELETE FROM transcript_entries WHERE session_id NOT IN (${placeholders})`).run(...ids);
+}
+
+function importLegacyTranscripts(validIds) {
+  const db = openDb();
+  const existing = db.prepare('SELECT 1 FROM transcript_entries LIMIT 1').get();
+  if (existing || !existsSync(DIR)) return;
+
+  const files = readdirSync(DIR).filter(f => f.endsWith('.jsonl'));
+  const insert = db.prepare('INSERT INTO transcript_entries (session_id, ts, role, text) VALUES (?, ?, ?, ?)');
+
+  db.exec('BEGIN');
+  try {
+    for (const file of files) {
+      const id = basename(file, '.jsonl');
+      if (validIds && !validIds.has(id)) continue;
+      const lines = readFileSync(join(DIR, file), 'utf8').split('\n').filter(Boolean);
+      for (const line of lines) {
+        try {
+          const entry = JSON.parse(line);
+          insert.run(id, Number(entry.ts) || Date.now(), entry.role || 'agent', String(entry.text || ''));
+        } catch {}
+      }
+    }
+    db.exec('COMMIT');
+  } catch (error) {
+    db.exec('ROLLBACK');
+    throw error;
   }
 }
 
-function fpath(id) { return join(DIR, `${id}.jsonl`); }
+function init(bc, validIds) {
+  broadcast = bc;
+  for (const key of Object.keys(cache)) delete cache[key];
+
+  clearInvalidEntries(validIds);
+  importLegacyTranscripts(validIds);
+
+  const rows = openDb().prepare(`
+    SELECT session_id, text
+    FROM transcript_entries
+    ORDER BY session_id ASC, ts ASC, id ASC
+  `).all();
+  for (const row of rows) {
+    if (validIds && !validIds.has(row.session_id)) continue;
+    if (!cache[row.session_id]) cache[row.session_id] = '';
+    cache[row.session_id] += '\n' + row.text;
+    trimCache(row.session_id);
+  }
+}
 
 function store(id, role, text) {
-  appendFile(fpath(id), JSON.stringify({ ts: Date.now(), role, text }) + '\n', () => {});
+  openDb().prepare(`
+    INSERT INTO transcript_entries (session_id, ts, role, text)
+    VALUES (?, ?, ?, ?)
+  `).run(id, Date.now(), role, text);
   if (!cache[id]) cache[id] = '';
   cache[id] += '\n' + text;
-  if (cache[id].length > MAX_CACHE) cache[id] = cache[id].slice(-MAX_CACHE);
+  trimCache(id);
   if (broadcast) broadcast({ type: 'transcript.append', id, text });
 }
 

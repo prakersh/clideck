@@ -11,7 +11,6 @@ const {
   setSessionCookie,
 } = require('./auth');
 const { ensurePtyHelper } = require('./utils');
-const { onConnection } = require('./handlers');
 const sessions = require('./sessions');
 
 const transcript = require('./transcript');
@@ -21,6 +20,7 @@ const plugins = require('./plugin-loader');
 ensurePtyHelper();
 openDb();
 getIngressToken();
+const { onConnection, getConfig } = require('./handlers');
 sessions.loadSessions();
 transcript.init(sessions.broadcast, new Set(sessions.getResumable().map(s => s.id)));
 telemetry.init(sessions.broadcast, sessions.getSessions);
@@ -38,9 +38,74 @@ const ALIASES = {
 };
 
 const PUBLIC_ROOT = join(__dirname, 'public');
+const CSP = [
+  "default-src 'self'",
+  "script-src 'self'",
+  "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
+  "font-src 'self' https://fonts.gstatic.com data:",
+  "img-src 'self' data: blob:",
+  "connect-src 'self' ws: wss:",
+  "media-src 'self' blob:",
+  "form-action 'self'",
+  "frame-ancestors 'none'",
+  "object-src 'none'",
+  "base-uri 'none'",
+].join('; ');
 
 function requestPath(req) {
   return (req.url || '/').split('?')[0] || '/';
+}
+
+function applySecurityHeaders(req, res) {
+  res.setHeader('Content-Security-Policy', CSP);
+  res.setHeader('Referrer-Policy', 'no-referrer');
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('X-Frame-Options', 'DENY');
+  if (requestPath(req) === '/' || requestPath(req) === '/login' || requestPath(req).startsWith('/auth/')) {
+    res.setHeader('Cache-Control', 'no-store');
+  }
+}
+
+function configuredOrigins() {
+  return String(process.env.CLIDECK_ALLOWED_ORIGINS || '')
+    .split(',')
+    .map(item => item.trim())
+    .filter(Boolean);
+}
+
+function allowedOriginsForRequest(req) {
+  const configured = configuredOrigins();
+  if (configured.length) return new Set(configured);
+
+  const origins = new Set();
+  const hostHeader = String(req.headers.host || '').trim();
+  if (hostHeader) {
+    origins.add(`http://${hostHeader}`);
+    origins.add(`https://${hostHeader}`);
+  }
+  origins.add(`http://localhost:${PORT}`);
+  origins.add(`http://127.0.0.1:${PORT}`);
+  origins.add(`http://[::1]:${PORT}`);
+  origins.add(`https://localhost:${PORT}`);
+  origins.add(`https://127.0.0.1:${PORT}`);
+  origins.add(`https://[::1]:${PORT}`);
+  if (HOST && !['0.0.0.0', '::'].includes(HOST)) {
+    origins.add(`http://${HOST}:${PORT}`);
+    origins.add(`https://${HOST}:${PORT}`);
+  }
+  return origins;
+}
+
+function isAllowedHttpOrigin(req) {
+  const origin = String(req.headers.origin || '').trim();
+  if (!origin) return true;
+  return allowedOriginsForRequest(req).has(origin);
+}
+
+function isAllowedWsOrigin(req) {
+  const origin = String(req.headers.origin || '').trim();
+  if (!origin) return false;
+  return allowedOriginsForRequest(req).has(origin);
 }
 
 function redirect(res, location) {
@@ -114,8 +179,14 @@ async function handleIngest(req, res, path) {
 
 async function handleRequest(req, res) {
   const path = requestPath(req);
+  applySecurityHeaders(req, res);
 
   if (path.startsWith('/auth/')) {
+    if (!isAllowedHttpOrigin(req)) {
+      res.writeHead(403, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Origin not allowed.' }));
+      return;
+    }
     const handled = await handleAuthRoute(req, res);
     if (handled) return;
     res.writeHead(404).end();
@@ -129,12 +200,27 @@ async function handleRequest(req, res) {
 
   const auth = getSessionResponse(req, { touch: true });
 
+  if (path.startsWith('/plugins/')) {
+    if (!auth.authenticated) {
+      res.writeHead(401, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Authentication required.' }));
+      return;
+    }
+    const pluginFile = plugins.resolveFile(path);
+    if (pluginFile) {
+      serveFile(res, pluginFile);
+      return;
+    }
+    res.writeHead(404).end();
+    return;
+  }
+
   if (path === '/' || path === '/index.html') {
     if (!auth.authenticated) {
       redirect(res, '/login');
       return;
     }
-    setSessionCookie(res, auth.session.token);
+    setSessionCookie(res, auth.session.token, req);
     serveFile(res, join(PUBLIC_ROOT, 'index.html'));
     return;
   }
@@ -145,17 +231,6 @@ async function handleRequest(req, res) {
       return;
     }
     serveFile(res, join(PUBLIC_ROOT, 'index.html'));
-    return;
-  }
-
-  // Plugin static files (/plugins/<id>/client.js, /plugins/<id>/public/*)
-  if (path.startsWith('/plugins/')) {
-    const pluginFile = plugins.resolveFile(path);
-    if (pluginFile) {
-      serveFile(res, pluginFile);
-      return;
-    }
-    res.writeHead(404).end();
     return;
   }
 
@@ -184,6 +259,12 @@ const wss = new WebSocketServer({ noServer: true });
 wss.on('connection', onConnection);
 
 server.on('upgrade', (req, socket, head) => {
+  if (!isAllowedWsOrigin(req)) {
+    socket.write('HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n');
+    socket.destroy();
+    return;
+  }
+
   const auth = getSessionResponse(req, { touch: true });
   if (!auth.authenticated) {
     socket.write('HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n');
@@ -202,7 +283,6 @@ activity.start(sessions.getSessions(), sessions.broadcast);
 sessions.startAutoSave(() => require('./handlers').getConfig());
 
 // Graceful shutdown: persist sessions before exit
-const { getConfig } = require('./handlers');
 function onShutdown() {
   plugins.shutdown();
   activity.stop();

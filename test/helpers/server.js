@@ -18,8 +18,8 @@ async function waitForServer(baseUrl) {
   throw new Error(`Server did not become ready at ${baseUrl}`);
 }
 
-async function startServer(port) {
-  const home = await mkdtemp(join(os.tmpdir(), 'clideck-auth-'));
+async function startServer(port, options = {}) {
+  const home = options.home || await mkdtemp(join(os.tmpdir(), 'clideck-auth-'));
   const child = spawn(process.execPath, ['server.js'], {
     cwd: REPO_ROOT,
     env: {
@@ -27,6 +27,7 @@ async function startServer(port) {
       HOME: home,
       CLIDECK_HOST: '127.0.0.1',
       CLIDECK_PORT: String(port),
+      ...(options.env || {}),
     },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
@@ -50,6 +51,7 @@ async function startServer(port) {
     baseUrl,
     child,
     home,
+    preserveHome: !!options.home,
     logs() {
       return { stdout, stderr };
     },
@@ -62,7 +64,7 @@ async function stopServer(server) {
     await delay(250);
     if (server.child.exitCode == null) server.child.kill('SIGKILL');
   }
-  await rm(server.home, { recursive: true, force: true });
+  if (!server.preserveHome) await rm(server.home, { recursive: true, force: true });
 }
 
 async function postJson(server, path, body, options = {}) {

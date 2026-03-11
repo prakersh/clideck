@@ -1,7 +1,8 @@
 const pty = require('node-pty');
-const { readFileSync, writeFileSync, existsSync } = require('fs');
+const { readFileSync, existsSync } = require('fs');
 const { join } = require('path');
 const { getIngressToken, INGRESS_HEADER } = require('./auth');
+const { openDb } = require('./db');
 const { resolveValidDir, defaultShell, binName } = require('./utils');
 const {
   findPresetForCommand,
@@ -31,6 +32,81 @@ function broadcast(msg) {
   const raw = JSON.stringify(msg);
   for (const c of clients) if (c.readyState === 1) c.send(raw);
   if (msg.type === 'session.status') plugins.notifyStatus(msg.id, msg.working);
+}
+
+function normalizeSavedSession(session = {}) {
+  return {
+    id: session.id,
+    name: session.name,
+    commandId: session.commandId ?? session.command_id,
+    cwd: session.cwd || '',
+    themeId: session.themeId ?? session.theme_id ?? session.profileId ?? 'default',
+    sessionToken: session.sessionToken ?? session.session_token ?? null,
+    projectId: session.projectId ?? session.project_id ?? null,
+    muted: !!session.muted,
+    lastPreview: session.lastPreview ?? session.last_preview ?? '',
+    lastActivityAt: session.lastActivityAt ?? session.last_activity_at ?? null,
+    savedAt: session.savedAt ?? session.saved_at ?? new Date().toISOString(),
+  };
+}
+
+function syncPersistedSessions(items) {
+  const db = openDb();
+  const insert = db.prepare(`
+    INSERT INTO resumable_sessions (
+      id, name, command_id, cwd, theme_id, session_token,
+      project_id, muted, last_preview, last_activity_at, saved_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `);
+
+  db.exec('BEGIN');
+  try {
+    db.prepare('DELETE FROM resumable_sessions').run();
+    for (const item of items.map(normalizeSavedSession)) {
+      insert.run(
+        item.id,
+        item.name,
+        item.commandId,
+        item.cwd,
+        item.themeId,
+        item.sessionToken,
+        item.projectId,
+        item.muted ? 1 : 0,
+        item.lastPreview,
+        item.lastActivityAt,
+        item.savedAt
+      );
+    }
+    db.exec('COMMIT');
+  } catch (error) {
+    db.exec('ROLLBACK');
+    throw error;
+  }
+}
+
+function deletePersistedSession(id) {
+  openDb().prepare('DELETE FROM resumable_sessions WHERE id = ?').run(id);
+}
+
+function loadPersistedSessions() {
+  const db = openDb();
+  const rows = db.prepare(`
+    SELECT
+      id, name, command_id, cwd, theme_id, session_token,
+      project_id, muted, last_preview, last_activity_at, saved_at
+    FROM resumable_sessions
+    ORDER BY saved_at DESC, id ASC
+  `).all();
+  if (rows.length) return rows.map(normalizeSavedSession);
+
+  if (!existsSync(SAVED_PATH)) return [];
+  try {
+    const legacy = JSON.parse(readFileSync(SAVED_PATH, 'utf8')).map(normalizeSavedSession);
+    if (legacy.length) syncPersistedSessions(legacy);
+    return legacy;
+  } catch {
+    return [];
+  }
 }
 
 // --- Spawn a PTY and wire up a session ---
@@ -200,6 +276,7 @@ function resume(msg, ws, cfg) {
 
   // Remove from resumable list and notify all clients
   resumable = resumable.filter(s => s.id !== id);
+  deletePersistedSession(id);
   broadcast({ type: 'sessions.resumable', list: resumable });
 
   broadcast({ type: 'created', id, name: saved.name, themeId: saved.themeId || saved.profileId || 'default', commandId: saved.commandId, projectId: saved.projectId || null, muted: !!saved.muted, resumed: true, lastPreview: saved.lastPreview || '' });
@@ -238,7 +315,10 @@ function close(msg) {
   // Also remove from resumable list if present
   const before = resumable.length;
   resumable = resumable.filter(r => r.id !== msg.id);
-  if (resumable.length !== before) broadcast({ type: 'sessions.resumable', list: resumable });
+  if (resumable.length !== before) {
+    deletePersistedSession(msg.id);
+    broadcast({ type: 'sessions.resumable', list: resumable });
+  }
 }
 
 // Restart a live session's PTY with updated env (e.g. after polarity flip).
@@ -346,17 +426,14 @@ function saveSessions(cfg) {
   const pending = resumable.filter(s => !liveIds.has(s.id));
   const data = [...live, ...pending];
 
-  writeFileSync(SAVED_PATH, JSON.stringify(data, null, 2));
+  syncPersistedSessions(data);
   if (skippedNoToken > 0) console.warn(`Skipped ${skippedNoToken} resumable session(s): no session token captured`);
   return data.length;
 }
 
 function loadSessions() {
-  if (!existsSync(SAVED_PATH)) return;
-  try {
-    resumable = JSON.parse(readFileSync(SAVED_PATH, 'utf8'));
-    console.log(`Loaded ${resumable.length} resumable session(s)`);
-  } catch { resumable = []; }
+  resumable = loadPersistedSessions();
+  if (resumable.length) console.log(`Loaded ${resumable.length} resumable session(s)`);
 }
 
 let autoSaveInterval = null;

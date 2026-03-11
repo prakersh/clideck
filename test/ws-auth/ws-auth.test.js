@@ -29,28 +29,40 @@ function waitForMessage(ws) {
 }
 
 test.before(async () => {
-  server = await startServer(4102);
+  server = await startServer(4102, {
+    env: { USERNAME: 'owner', PASSWORD: 'swordfish' },
+  });
 });
 
 test.after(async () => {
   await stopServer(server);
 });
 
-test('unauthenticated websocket upgrades are rejected', async () => {
+test('websocket upgrades without an allowed origin are rejected', async () => {
   await assert.rejects(
     openSocket('ws://127.0.0.1:4102'),
-    /401/
+    /403/
   );
 });
 
-test('authenticated websocket upgrades receive bootstrap payloads', async () => {
+test('websocket upgrades with a bad origin are rejected before auth', async () => {
+  await assert.rejects(
+    openSocket('ws://127.0.0.1:4102', { Origin: 'https://evil.example' }),
+    /403/
+  );
+});
+
+test('authenticated websocket upgrades with an allowed origin receive bootstrap payloads', async () => {
   const login = await postJson(server, '/auth/login', {
-    username: 'admin',
-    password: 'another-strong-password',
+    username: 'owner',
+    password: 'swordfish',
   });
   const cookie = getCookie(login);
 
-  const ws = await openSocket('ws://127.0.0.1:4102', { Cookie: cookie });
+  const ws = await openSocket('ws://127.0.0.1:4102', {
+    Cookie: cookie,
+    Origin: 'http://127.0.0.1:4102',
+  });
   const firstMessage = await waitForMessage(ws);
   assert.equal(firstMessage.type, 'config');
   ws.close();
