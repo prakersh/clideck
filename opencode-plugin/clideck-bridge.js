@@ -3,11 +3,15 @@
 // Install: copy to ~/.config/opencode/plugins/clideck-bridge.js
 
 const CLIDECK_URL = "http://localhost:4000/opencode-events";
+const INGRESS_TOKEN = process.env.CLIDECK_INGRESS_TOKEN;
 
 function post(payload) {
   fetch(CLIDECK_URL, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: {
+      "Content-Type": "application/json",
+      ...(INGRESS_TOKEN ? { "x-clideck-ingress": INGRESS_TOKEN } : {}),
+    },
     body: JSON.stringify(payload),
   }).catch(() => {});
 }

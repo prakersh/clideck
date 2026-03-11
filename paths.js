@@ -3,6 +3,7 @@ const { mkdirSync, existsSync, copyFileSync, cpSync, readdirSync } = require('fs
 const os = require('os');
 
 const DATA_DIR = join(os.homedir(), '.clideck');
+const DB_PATH = join(DATA_DIR, 'clideck.db');
 const LEGACY_DIR = __dirname;
 const OLD_DATA_DIR = join(os.homedir(), '.termix');
 mkdirSync(DATA_DIR, { recursive: true });
@@ -38,4 +39,4 @@ if (existsSync(legacyTranscripts) && !existsSync(newTranscripts)) {
   } catch {}
 }
 
-module.exports = { DATA_DIR };
+module.exports = { DATA_DIR, DB_PATH };

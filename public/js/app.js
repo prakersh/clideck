@@ -13,8 +13,157 @@ import { initDrag } from './drag.js';
 import { registerHotkey, unregisterHotkey } from './hotkeys.js';
 import { renderPrompts } from './prompts.js';
 
+const AUTH_REFRESH_MS = 60 * 60 * 1000;
+const authTitle = document.getElementById('auth-title');
+const authSubtitle = document.getElementById('auth-subtitle');
+const authForm = document.getElementById('auth-form');
+const authStatus = document.getElementById('auth-status');
+const authError = document.getElementById('auth-error');
+const authSubmit = document.getElementById('auth-submit');
+const authUsername = document.getElementById('auth-username');
+const authPassword = document.getElementById('auth-password');
+
+function setAuthError(message = '') {
+  authError.textContent = message;
+  authError.classList.toggle('hidden', !message);
+}
+
+function setAuthStatus(message, { loading = false } = {}) {
+  authStatus.textContent = message;
+  authStatus.classList.toggle('loading', loading);
+}
+
+function showAuthShell({ setupRequired = false, error = '', loading = false, status } = {}) {
+  document.body.classList.add('auth-required');
+  document.body.classList.remove('auth-pending');
+  authTitle.textContent = setupRequired ? 'Create the local admin account' : 'Sign in to CliDeck';
+  authSubtitle.textContent = setupRequired
+    ? 'This machine does not have an admin account yet. The first login creates it locally and enables a seven-day session.'
+    : 'CliDeck keeps the control plane behind a local admin session. Sign in to unlock sessions, settings, and plugins.';
+  authSubmit.textContent = setupRequired ? 'Create admin account' : 'Sign in';
+  authForm.classList.remove('hidden');
+  setAuthError(error);
+  setAuthStatus(status || (setupRequired ? 'Create the first local admin account to continue.' : 'Enter your local admin credentials.'), { loading });
+  if (!document.activeElement || document.activeElement === document.body) {
+    (setupRequired ? authUsername : authPassword).focus();
+  }
+}
+
+function showAppShell() {
+  document.body.classList.remove('auth-required', 'auth-pending');
+  setAuthError('');
+  setAuthStatus('Authenticated.', { loading: false });
+  if (location.pathname === '/login') history.replaceState({}, '', '/');
+}
+
+function stopAuthRefresh() {
+  clearInterval(state.authRefreshTimer);
+  state.authRefreshTimer = null;
+}
+
+function startAuthRefresh() {
+  stopAuthRefresh();
+  if (!state.auth.authenticated) return;
+  state.authRefreshTimer = setInterval(() => {
+    refreshAuthState({ suppressUi: true }).catch(() => {});
+  }, AUTH_REFRESH_MS);
+}
+
+async function requestAuthState() {
+  const res = await fetch('/auth/me', { credentials: 'same-origin' });
+  let data = null;
+  try { data = await res.json(); } catch {}
+  return { ok: res.ok, status: res.status, data };
+}
+
+async function refreshAuthState({ suppressUi = false } = {}) {
+  const result = await requestAuthState();
+
+  if (result.ok) {
+    state.auth.ready = true;
+    state.auth.authenticated = true;
+    state.auth.setupRequired = false;
+    state.auth.user = result.data.user;
+    showAppShell();
+    startAuthRefresh();
+    return true;
+  }
+
+  state.auth.ready = true;
+  state.auth.authenticated = false;
+  state.auth.setupRequired = !!result.data?.setupRequired;
+  state.auth.user = null;
+  stopAuthRefresh();
+
+  if (!suppressUi) showAuthShell({ setupRequired: state.auth.setupRequired });
+  return false;
+}
+
+async function submitAuthForm(event) {
+  event.preventDefault();
+  setAuthError('');
+  setAuthStatus(state.auth.setupRequired ? 'Creating local admin account…' : 'Signing in…', { loading: true });
+  authSubmit.disabled = true;
+
+  try {
+    const res = await fetch('/auth/login', {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        username: authUsername.value.trim(),
+        password: authPassword.value,
+      }),
+    });
+    const payload = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      setAuthError(payload.error || 'Sign-in failed.');
+      showAuthShell({
+        setupRequired: !!payload.setupRequired || state.auth.setupRequired,
+        status: 'Authentication failed. Check the credentials and try again.',
+      });
+      return;
+    }
+
+    authPassword.value = '';
+    await refreshAuthState();
+    connect();
+  } catch (error) {
+    setAuthError(error.message || 'Unable to reach the local server.');
+    showAuthShell({
+      setupRequired: state.auth.setupRequired,
+      status: 'Could not reach the local auth endpoint.',
+    });
+  } finally {
+    authSubmit.disabled = false;
+  }
+}
+
+async function logout() {
+  state.auth.loggingOut = true;
+  stopAuthRefresh();
+  if (state.ws) {
+    try { state.ws.close(1000, 'logout'); } catch {}
+    state.ws = null;
+  }
+
+  try {
+    await fetch('/auth/logout', { method: 'POST', credentials: 'same-origin' });
+  } catch {}
+
+  state.auth.authenticated = false;
+  state.auth.user = null;
+  state.auth.loggingOut = false;
+  history.replaceState({}, '', '/login');
+  showAuthShell({ setupRequired: false, status: 'Signed out.' });
+}
+
 function connect() {
-  state.ws = new WebSocket(`ws://${location.host}`);
+  if (!state.auth.authenticated) return;
+  if (state.ws && (state.ws.readyState === WebSocket.OPEN || state.ws.readyState === WebSocket.CONNECTING)) return;
+
+  const protocol = location.protocol === 'https:' ? 'wss' : 'ws';
+  state.ws = new WebSocket(`${protocol}://${location.host}`);
 
   state.ws.onopen = () => {
     for (const [, e] of state.terms) { e.ro.disconnect(); e.term.dispose(); e.el.remove(); }
@@ -209,7 +358,28 @@ function connect() {
     }
   };
 
-  state.ws.onclose = () => setTimeout(connect, 1000);
+  state.ws.onclose = async () => {
+    state.ws = null;
+    if (state.auth.loggingOut) return;
+
+    let authenticated = false;
+    try {
+      authenticated = await refreshAuthState({ suppressUi: true });
+    } catch {
+      if (state.auth.authenticated) {
+        setTimeout(connect, 1000);
+      }
+      return;
+    }
+
+    if (!authenticated) {
+      history.replaceState({}, '', '/login');
+      showAuthShell({ setupRequired: state.auth.setupRequired });
+      return;
+    }
+
+    setTimeout(connect, 1000);
+  };
 }
 
 const mobileSidebarQuery = window.matchMedia('(max-width: 960px)');
@@ -230,6 +400,9 @@ document.getElementById('mobile-sidebar-backdrop').addEventListener('click', clo
 mobileSidebarQuery.addEventListener('change', (e) => {
   if (!e.matches) closeMobileSidebar();
 });
+
+authForm.addEventListener('submit', submitAuthForm);
+document.getElementById('rail-logout').addEventListener('click', logout);
 
 // Sidebar events
 const sessionList = document.getElementById('session-list');
@@ -839,6 +1012,24 @@ function initSessionScrollbarVisibility() {
   }, { passive: true });
 }
 
-initDrag();
-initSessionScrollbarVisibility();
-connect();
+async function boot() {
+  initDrag();
+  initSessionScrollbarVisibility();
+
+  try {
+    const authenticated = await refreshAuthState();
+    if (!authenticated) {
+      if (location.pathname !== '/login') history.replaceState({}, '', '/login');
+      return;
+    }
+    connect();
+  } catch (error) {
+    showAuthShell({
+      setupRequired: false,
+      error: error.message || 'Unable to reach the local server.',
+      status: 'CliDeck could not verify the local admin session.',
+    });
+  }
+}
+
+boot();

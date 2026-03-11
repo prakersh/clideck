@@ -1,6 +1,7 @@
 const pty = require('node-pty');
 const { readFileSync, writeFileSync, existsSync } = require('fs');
 const { join } = require('path');
+const { getIngressToken, INGRESS_HEADER } = require('./auth');
 const { resolveValidDir, defaultShell, binName } = require('./utils');
 const {
   findPresetForCommand,
@@ -15,7 +16,7 @@ const plugins = require('./plugin-loader');
 
 const THEMES = require('./themes');
 const MAX_BUFFER = 200 * 1024;
-const PORT = 4000;
+const PORT = Number(process.env.CLIDECK_PORT || 4000);
 const ANSI_RE = /\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b\].*?(?:\x07|\x1b\\)|\x1b./g;
 const PRESETS = getPresets();
 const { DATA_DIR } = require('./paths');
@@ -36,15 +37,30 @@ function broadcast(msg) {
 
 function buildTelemetryEnv(id, cmd) {
   const preset = findPresetForCommand(cmd.command);
-  const telemetryEnabled = cmd.telemetryEnabled ?? (preset?.presetId === 'claude-code');
-  if (!preset?.telemetryEnv || !telemetryEnabled) return {};
   const env = {};
-  for (const [k, v] of Object.entries(preset.telemetryEnv)) {
-    env[k] = v.replace('{{port}}', String(PORT));
+  if (!preset) return env;
+
+  const telemetryEnabled = cmd.telemetryEnabled ?? (preset.presetId === 'claude-code');
+  if (preset.telemetryEnv && telemetryEnabled) {
+    for (const [k, v] of Object.entries(preset.telemetryEnv)) {
+      env[k] = v.replace('{{port}}', String(PORT));
+    }
+    // Tag events with our session ID so the receiver can map them
+    const existing = process.env.OTEL_RESOURCE_ATTRIBUTES || '';
+    env.OTEL_RESOURCE_ATTRIBUTES = (existing ? existing + ',' : '') + `clideck.session_id=${id}`;
   }
-  // Tag events with our session ID so the receiver can map them
-  const existing = process.env.OTEL_RESOURCE_ATTRIBUTES || '';
-  env.OTEL_RESOURCE_ATTRIBUTES = (existing ? existing + ',' : '') + `clideck.session_id=${id}`;
+
+  const ingressToken = getIngressToken();
+  const otelHeaders = `${INGRESS_HEADER}=${ingressToken}`;
+  if (preset.telemetryEnv && telemetryEnabled) {
+    env.OTEL_EXPORTER_OTLP_HEADERS = process.env.OTEL_EXPORTER_OTLP_HEADERS
+      ? `${process.env.OTEL_EXPORTER_OTLP_HEADERS},${otelHeaders}`
+      : otelHeaders;
+    env.GEMINI_TELEMETRY_OTLP_HEADERS = process.env.GEMINI_TELEMETRY_OTLP_HEADERS
+      ? `${process.env.GEMINI_TELEMETRY_OTLP_HEADERS},${otelHeaders}`
+      : otelHeaders;
+  }
+  if (preset.bridge === 'opencode') env.CLIDECK_INGRESS_TOKEN = ingressToken;
   return env;
 }
 

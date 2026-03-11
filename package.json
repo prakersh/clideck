@@ -9,6 +9,9 @@
   "scripts": {
     "start": "node server.js",
     "build:css": "tailwindcss -i src/input.css -o public/tailwind.css --minify",
+    "test": "node --test test/auth/*.test.js test/ws-auth/*.test.js",
+    "test:auth": "node --test test/auth/*.test.js",
+    "test:ws-auth": "node --test test/ws-auth/*.test.js",
     "prepublishOnly": "npm run build:css"
   },
   "keywords": [

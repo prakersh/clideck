@@ -2,6 +2,7 @@ const { readFileSync, writeFileSync, mkdirSync, existsSync, copyFileSync, unlink
 const { join, dirname } = require('path');
 const { execFileSync } = require('child_process');
 const os = require('os');
+const { refreshSocketAuth } = require('./auth');
 const config = require('./config');
 const sessions = require('./sessions');
 const themes = require('./themes');
@@ -81,6 +82,11 @@ function detectTelemetryConfig(c) {
 }
 
 function onConnection(ws) {
+  if (!refreshSocketAuth(ws)) {
+    ws.close(4401, 'auth_required');
+    return;
+  }
+
   sessions.clients.add(ws);
 
   ws.send(JSON.stringify({ type: 'config', config: cfg }));
@@ -93,6 +99,11 @@ function onConnection(ws) {
   sessions.sendBuffers(ws);
 
   ws.on('message', (raw) => {
+    if (!refreshSocketAuth(ws)) {
+      ws.close(4401, 'auth_required');
+      return;
+    }
+
     let msg;
     try { msg = JSON.parse(raw); } catch { return; }
 
