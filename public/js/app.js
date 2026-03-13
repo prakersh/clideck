@@ -11,9 +11,10 @@ import { showToast } from './toast.js';
 import './nav.js';
 import { initDrag } from './drag.js';
 import { registerHotkey, unregisterHotkey } from './hotkeys.js';
-import { renderPrompts } from './prompts.js';
+import { handleVirtualTerminalKey, renderPrompts } from './prompts.js';
 
 const AUTH_REFRESH_MS = 60 * 60 * 1000;
+const LOCALHOST_HOSTS = new Set(['localhost', '127.0.0.1', '[::1]']);
 const authTitle = document.getElementById('auth-title');
 const authSubtitle = document.getElementById('auth-subtitle');
 const authForm = document.getElementById('auth-form');
@@ -22,6 +23,70 @@ const authError = document.getElementById('auth-error');
 const authSubmit = document.getElementById('auth-submit');
 const authUsername = document.getElementById('auth-username');
 const authPassword = document.getElementById('auth-password');
+
+function registerServiceWorker() {
+  if (!('serviceWorker' in navigator)) return;
+  if (location.protocol !== 'https:' && !LOCALHOST_HOSTS.has(location.hostname)) return;
+  window.addEventListener('load', () => {
+    navigator.serviceWorker.register('/sw.js')
+      .catch((error) => console.warn('[pwa] service worker registration failed:', error));
+  });
+}
+
+// PWA Install prompt
+let deferredInstallPrompt = null;
+
+function setupPWAInstall() {
+  window.addEventListener('beforeinstallprompt', (e) => {
+    e.preventDefault();
+    deferredInstallPrompt = e;
+    showInstallBanner();
+  });
+
+  window.addEventListener('appinstalled', () => {
+    deferredInstallPrompt = null;
+    hideInstallBanner();
+    showToast('CliDeck installed successfully!');
+  });
+}
+
+function showInstallBanner() {
+  if (document.getElementById('pwa-install-banner')) return;
+  if (sessionStorage.getItem('pwa-banner-dismissed')) return;
+  const banner = document.createElement('div');
+  banner.id = 'pwa-install-banner';
+  banner.className = 'fixed bottom-4 left-4 right-4 z-[500] flex items-center gap-3 px-4 py-3 rounded-xl border border-slate-600/80 bg-slate-800/95 backdrop-blur-md shadow-2xl shadow-black/40 animate-slide-up';
+  banner.innerHTML = `
+    <img src="/img/clideck-logo-icon.png" class="w-10 h-10 rounded-lg" alt="CliDeck">
+    <div class="flex-1 min-w-0">
+      <div class="text-sm font-semibold text-slate-100">Install CliDeck</div>
+      <div class="text-xs text-slate-400">Add to home screen for quick access</div>
+    </div>
+    <button id="pwa-install-btn" class="px-4 py-2 text-sm font-semibold rounded-lg bg-blue-500 text-white hover:bg-blue-400 transition-colors">Install</button>
+    <button id="pwa-dismiss-btn" class="p-1.5 text-slate-500 hover:text-slate-300 transition-colors" title="Dismiss">
+      <svg class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path d="M6 18L18 6M6 6l12 12"/></svg>
+    </button>
+  `;
+  document.body.appendChild(banner);
+
+  document.getElementById('pwa-install-btn').addEventListener('click', async () => {
+    if (!deferredInstallPrompt) return;
+    deferredInstallPrompt.prompt();
+    const { outcome } = await deferredInstallPrompt.userChoice;
+    if (outcome === 'accepted') deferredInstallPrompt = null;
+    hideInstallBanner();
+  });
+
+  document.getElementById('pwa-dismiss-btn').addEventListener('click', () => {
+    hideInstallBanner();
+    // Remember dismissal for this session
+    sessionStorage.setItem('pwa-banner-dismissed', '1');
+  });
+}
+
+function hideInstallBanner() {
+  document.getElementById('pwa-install-banner')?.remove();
+}
 
 function setAuthError(message = '') {
   authError.textContent = message;
@@ -383,9 +448,86 @@ function connect() {
 }
 
 const mobileSidebarQuery = window.matchMedia('(max-width: 960px)');
+const mobileKeybarToggle = document.getElementById('mobile-keybar-toggle');
+const mobileKeybar = document.getElementById('mobile-keybar');
+const mobileSelectToggle = document.getElementById('mobile-select-toggle');
+const MOBILE_KEYBOARD_THRESHOLD = 90;
+const DIRECT_SEQUENCES = {
+  'ctrl+c': '\x03',
+  'ctrl+d': '\x04',
+  'ctrl+l': '\x0c',
+  'shift+tab': '\x1b[Z',
+};
 
 function closeMobileSidebar() {
   document.body.classList.remove('mobile-nav-open');
+}
+
+function syncModifierButtons() {
+  mobileKeybar?.querySelectorAll('[data-modifier]').forEach((btn) => {
+    const active = !!state.mobileKeybar.modifiers[btn.dataset.modifier];
+    btn.classList.toggle('mod-active', active);
+  });
+}
+
+function syncSelectionButton() {
+  mobileSelectToggle?.classList.toggle('select-active', !!state.mobileKeybar.selectionMode);
+}
+
+function setMobileSelectionMode(enabled) {
+  state.mobileKeybar.selectionMode = !!enabled && mobileSidebarQuery.matches;
+  document.body.classList.toggle('mobile-selection-mode', state.mobileKeybar.selectionMode);
+  syncSelectionButton();
+}
+
+function refreshActiveTerminalViewport({ scrollBottom = false } = {}) {
+  const entry = state.terms.get(state.active);
+  if (!entry) return;
+  try {
+    entry.fit?.fit();
+    if (entry.term?.cols && entry.term?.rows) {
+      send({ type: 'resize', id: state.active, cols: entry.term.cols, rows: entry.term.rows });
+    }
+    if (scrollBottom) entry.term.scrollToBottom();
+  } catch {}
+}
+
+function getMobileKeyboardInset() {
+  if (!mobileSidebarQuery.matches || !window.visualViewport) return 0;
+  const vv = window.visualViewport;
+  return Math.max(0, Math.round(window.innerHeight - (vv.height + vv.offsetTop)));
+}
+
+function syncMobileKeyboardViewport() {
+  if (!mobileSidebarQuery.matches) {
+    document.documentElement.style.setProperty('--mobile-kb-offset', '0px');
+    document.body.classList.remove('mobile-keyboard-open');
+    return;
+  }
+
+  const inset = getMobileKeyboardInset();
+  document.documentElement.style.setProperty('--mobile-kb-offset', `${inset}px`);
+  const keyboardOpen = inset > MOBILE_KEYBOARD_THRESHOLD;
+  document.body.classList.toggle('mobile-keyboard-open', keyboardOpen);
+
+  if (keyboardOpen) {
+    setMobileKeybarOpen(false);
+    setMobileSelectionMode(false);
+    refreshActiveTerminalViewport({ scrollBottom: true });
+  }
+}
+
+function clearModifierLatch() {
+  state.mobileKeybar.modifiers.ctrl = false;
+  state.mobileKeybar.modifiers.alt = false;
+  state.mobileKeybar.modifiers.shift = false;
+  syncModifierButtons();
+}
+
+function setMobileKeybarOpen(nextOpen) {
+  state.mobileKeybar.open = !!nextOpen && mobileSidebarQuery.matches;
+  document.body.classList.toggle('mobile-keybar-open', state.mobileKeybar.open);
+  if (!state.mobileKeybar.open) setMobileSelectionMode(false);
 }
 
 function toggleMobileSidebar(force) {
@@ -394,11 +536,124 @@ function toggleMobileSidebar(force) {
   document.body.classList.toggle('mobile-nav-open', next);
 }
 
+function sendTerminalKey(seq) {
+  if (!state.active || !seq) return;
+  send({ type: 'input', id: state.active, data: seq });
+}
+
+function arrowModifierCode(mods) {
+  const shift = mods.shift ? 1 : 0;
+  const alt = mods.alt ? 1 : 0;
+  const ctrl = mods.ctrl ? 1 : 0;
+  if (!shift && !alt && !ctrl) return null;
+  return 1 + shift + (alt * 2) + (ctrl * 4);
+}
+
+function csi(final, mods) {
+  if (!mods) return `\x1b[${final}`;
+  return `\x1b[1;${mods}${final}`;
+}
+
+function controlChar(letter) {
+  const code = letter.toUpperCase().charCodeAt(0);
+  if (code < 65 || code > 90) return null;
+  return String.fromCharCode(code - 64);
+}
+
+function sequenceForVirtualKey(key, mods) {
+  if (key === 'ArrowUp') return csi('A', arrowModifierCode(mods));
+  if (key === 'ArrowDown') return csi('B', arrowModifierCode(mods));
+  if (key === 'ArrowRight') return csi('C', arrowModifierCode(mods));
+  if (key === 'ArrowLeft') return csi('D', arrowModifierCode(mods));
+  if (key === 'Home') return csi('H', arrowModifierCode(mods));
+  if (key === 'End') return csi('F', arrowModifierCode(mods));
+  if (key === 'Escape') return '\x1b';
+  if (key === 'Enter') return '\r';
+  if (key === 'Backspace') return '\x7f';
+  if (key === 'Tab') {
+    return mods.shift ? '\x1b[Z' : '\t';
+  }
+  if (key.length === 1) {
+    if (mods.ctrl) return controlChar(key);
+    const char = mods.shift ? key.toUpperCase() : key.toLowerCase();
+    return mods.alt ? `\x1b${char}` : char;
+  }
+  return null;
+}
+
+function handleMobileKeybarPress(button) {
+  if (!button) return;
+  if (button === mobileSelectToggle) return;
+  if (state.mobileKeybar.selectionMode) setMobileSelectionMode(false);
+  const modifier = button.dataset.modifier;
+  if (modifier) {
+    state.mobileKeybar.modifiers[modifier] = !state.mobileKeybar.modifiers[modifier];
+    syncModifierButtons();
+    return;
+  }
+
+  const sequence = button.dataset.sequence;
+  if (sequence) {
+    sendTerminalKey(DIRECT_SEQUENCES[sequence]);
+    clearModifierLatch();
+    return;
+  }
+
+  const key = button.dataset.key;
+  if (!key) return;
+  if (handleVirtualTerminalKey(key)) {
+    clearModifierLatch();
+    return;
+  }
+
+  sendTerminalKey(sequenceForVirtualKey(key, state.mobileKeybar.modifiers));
+  clearModifierLatch();
+}
+
 document.getElementById('mobile-nav-toggle').addEventListener('click', () => toggleMobileSidebar());
 document.getElementById('mobile-nav-close').addEventListener('click', closeMobileSidebar);
 document.getElementById('mobile-sidebar-backdrop').addEventListener('click', closeMobileSidebar);
+mobileKeybarToggle?.addEventListener('click', () => setMobileKeybarOpen(!state.mobileKeybar.open));
+mobileSelectToggle?.addEventListener('click', () => {
+  setMobileSelectionMode(!state.mobileKeybar.selectionMode);
+  if (!state.mobileKeybar.open) setMobileKeybarOpen(true);
+});
+mobileKeybar?.addEventListener('click', (event) => {
+  handleMobileKeybarPress(event.target.closest('.mobile-key-btn'));
+});
+document.addEventListener('clideck:panel-switched', () => {
+  if (mobileSidebarQuery.matches) closeMobileSidebar();
+});
 mobileSidebarQuery.addEventListener('change', (e) => {
-  if (!e.matches) closeMobileSidebar();
+  if (!e.matches) {
+    closeMobileSidebar();
+    setMobileKeybarOpen(false);
+    setMobileSelectionMode(false);
+    document.documentElement.style.setProperty('--mobile-kb-offset', '0px');
+    document.body.classList.remove('mobile-keyboard-open');
+  } else {
+    syncMobileKeyboardViewport();
+  }
+});
+if (window.visualViewport) {
+  window.visualViewport.addEventListener('resize', syncMobileKeyboardViewport);
+  window.visualViewport.addEventListener('scroll', syncMobileKeyboardViewport);
+}
+window.addEventListener('resize', syncMobileKeyboardViewport);
+document.addEventListener('focusin', (event) => {
+  if (!mobileSidebarQuery.matches) return;
+  const isTerminalInput = event.target?.classList?.contains('xterm-helper-textarea');
+  if (!isTerminalInput) return;
+  closeMobileSidebar();
+  setMobileKeybarOpen(false);
+  setTimeout(() => {
+    syncMobileKeyboardViewport();
+    refreshActiveTerminalViewport({ scrollBottom: true });
+  }, 20);
+});
+document.addEventListener('focusout', () => {
+  if (!mobileSidebarQuery.matches) return;
+  setTimeout(syncMobileKeyboardViewport, 80);
 });
 
 authForm.addEventListener('submit', submitAuthForm);
@@ -1013,6 +1268,12 @@ function initSessionScrollbarVisibility() {
 }
 
 async function boot() {
+  registerServiceWorker();
+  setupPWAInstall();
+  syncModifierButtons();
+  syncSelectionButton();
+  setMobileSelectionMode(false);
+  syncMobileKeyboardViewport();
   initDrag();
   initSessionScrollbarVisibility();
 

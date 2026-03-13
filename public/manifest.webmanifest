@@ -1,0 +1,22 @@
+{
+  "name": "CliDeck",
+  "short_name": "CliDeck",
+  "description": "Run and manage multiple CLI agents from one mobile-friendly dashboard.",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#0f172a",
+  "theme_color": "#0f172a",
+  "icons": [
+    {
+      "src": "/img/clideck-logo-icon.png",
+      "sizes": "192x192",
+      "type": "image/png"
+    },
+    {
+      "src": "/img/clideck-logo-icon.png",
+      "sizes": "512x512",
+      "type": "image/png"
+    }
+  ]
+}
