@@ -1,7 +1,7 @@
 import { state, send } from './state.js';
 import { esc, findPresetForCommand } from './utils.js';
 import { addTerminal, removeTerminal, select, startRename, startProjectRename, setSessionTheme, openMenu, closeMenu, setStatus, updateMuteIndicator, updatePreview, markUnread, applyFilter, setTab, renderResumable, regroupSessions, toggleProjectCollapse, setSessionProject, estimateSize, restartComplete, positionMenu } from './terminals.js';
-import { renderSettings } from './settings.js';
+import { renderSettings, updateVersionFooter } from './settings.js';
 import { openCreator, closeCreator, refreshCreator } from './creator.js';
 import { handleDirsResponse, openFolderPicker } from './folder-picker.js';
 import { confirmClose } from './confirm.js';
@@ -9,8 +9,8 @@ import { applyTheme } from './profiles.js';
 import { toggleMode, applyMode } from './color-mode.js';
 import { showToast } from './toast.js';
 import './nav.js';
-import { initDrag } from './drag.js';
-import { registerHotkey, unregisterHotkey } from './hotkeys.js';
+import { initDrag, wasDragging } from './drag.js';
+import { registerHotkey, unregisterHotkey, unregisterAllForPlugin } from './hotkeys.js';
 import { handleVirtualTerminalKey, renderPrompts } from './prompts.js';
 
 const AUTH_REFRESH_MS = 60 * 60 * 1000;
@@ -236,6 +236,7 @@ function connect() {
     document.getElementById('session-list').innerHTML = '';
     state.active = null;
     document.getElementById('empty').style.display = 'flex';
+    send({ type: 'remote.status' });
   };
 
   state.ws.onmessage = ({ data }) => {
@@ -304,6 +305,7 @@ function connect() {
         }
         break;
       }
+      /* [OLD-STATUS] I/O burst heuristic — replaced by onRender detection in terminals.js
       case 'stats': {
         for (const [sid, st] of Object.entries(msg.stats)) {
           const entry = state.terms.get(sid);
@@ -315,12 +317,9 @@ function connect() {
           const userTyping = (st.rawRateIn || 0) > 0 && (st.rawRateIn || 0) < 50;
           entry.prevBurst = st.burstMs || 0;
 
-          // Working: burst increasing + net >= 800B + no typing
           const isWorking = burstUp && net >= 800 && !userTyping;
-          // Idle: burst not increasing + net < 800B
           const isIdle = !burstUp && net < 800;
 
-          // Sustain for ~1.5s (2 ticks)
           if (isWorking) entry.workTicks = (entry.workTicks || 0) + 1;
           else entry.workTicks = 0;
           if (isIdle) entry.idleTicks = (entry.idleTicks || 0) + 1;
@@ -336,6 +335,7 @@ function connect() {
         }
         break;
       }
+      [OLD-STATUS] */
       case 'transcript.cache':
         state.transcriptCache = msg.cache;
         for (const [id, text] of Object.entries(msg.cache)) {
@@ -416,6 +416,30 @@ function connect() {
         break;
       case 'plugins':
         loadPlugins(msg.list);
+        break;
+      case 'plugin.delete.error':
+        showToast(`Failed to remove plugin: ${msg.error}`, { duration: 4000 });
+        break;
+      case 'remote.status':
+        handleRemoteStatus(msg);
+        break;
+      case 'remote.paired':
+        handleRemotePaired(msg);
+        break;
+      case 'remote.unpaired':
+        handleRemoteUnpaired();
+        break;
+      case 'remote.error':
+        handleRemoteError(msg.error);
+        break;
+      case 'remote.install.progress':
+        appendInstallLog(msg.text);
+        break;
+      case 'remote.install.done':
+        handleInstallDone(msg.success);
+        break;
+      case 'remote.update':
+        showRemoteUpdateToast(msg);
         break;
       default:
         if (msg.type?.startsWith('plugin.')) dispatchPluginMessage(msg);
@@ -666,9 +690,9 @@ sessionList.addEventListener('click', (e) => {
   closeCreator();
   closeProjectCreator();
 
-  // Project header click — toggle collapse
+  // Project header click — toggle collapse (skip if just finished a drag)
   const projHeader = e.target.closest('.project-header');
-  if (projHeader && !e.target.closest('.project-menu-btn')) {
+  if (projHeader && !e.target.closest('.project-menu-btn') && !wasDragging()) {
     toggleProjectCollapse(projHeader.dataset.projectId);
     return;
   }
@@ -1110,20 +1134,28 @@ function renderPluginsPanel(list) {
   if (!list.length) {
     container.innerHTML = `<div class="flex flex-col items-center justify-center h-full px-6 text-center">
       <p class="text-sm text-slate-400 mb-1">No plugins installed</p>
-      <p class="text-xs text-slate-600 leading-relaxed">Plugins live in <code class="px-1 py-0.5 rounded bg-slate-800 text-slate-400 text-[11px]">~/.clideck/plugins/</code><br>Each one is a folder with a <code class="px-1 py-0.5 rounded bg-slate-800 text-slate-400 text-[11px]">clideck-plugin.json</code> and <code class="px-1 py-0.5 rounded bg-slate-800 text-slate-400 text-[11px]">index.js</code></p>
+      <p class="text-xs text-slate-600 leading-relaxed">Plugins live in <code class="px-1 py-0.5 rounded bg-slate-800 text-slate-400 text-[11px]">${esc(state.cfg.pluginsDir || '~/.clideck/plugins')}</code><br>Each one is a folder with a <code class="px-1 py-0.5 rounded bg-slate-800 text-slate-400 text-[11px]">clideck-plugin.json</code> and <code class="px-1 py-0.5 rounded bg-slate-800 text-slate-400 text-[11px]">index.js</code></p>
     </div>`;
     return;
   }
   const expanded = getPluginExpanded();
+  const trashSvg = `<svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M14.74 9l-.346 9m-4.788 0L9.26 9m9.968-3.21c.342.052.682.107 1.022.166m-1.022-.165L18.16 19.673a2.25 2.25 0 01-2.244 2.077H8.084a2.25 2.25 0 01-2.244-2.077L4.772 5.79m14.456 0a48.108 48.108 0 00-3.478-.397m-12 .562c.34-.059.68-.114 1.022-.165m0 0a48.11 48.11 0 013.478-.397m7.5 0v-.916c0-1.18-.91-2.164-2.09-2.201a51.964 51.964 0 00-3.32 0c-1.18.037-2.09 1.022-2.09 2.201v.916m7.5 0a48.667 48.667 0 00-7.5 0"/></svg>`;
+
   container.innerHTML = list.map((p, i) => {
     const open = !!expanded[p.id];
+    const deleteBtn = p.bundled ? '' : `<div class="plugin-delete flex items-center justify-center w-6 h-6 rounded text-slate-600 hover:text-red-400 hover:bg-slate-700/50 cursor-pointer transition-colors flex-shrink-0" data-plugin-id="${esc(p.id)}" data-plugin-name="${esc(p.name)}" title="Remove plugin">${trashSvg}</div>`;
+    const hasFooter = p.author || !p.bundled;
     return `
     <div class="plugin-card ${i > 0 ? 'border-t border-slate-700/50' : ''}">
-      <button class="plugin-toggle w-full flex items-center gap-2 px-4 py-3 text-left hover:bg-slate-800/50 transition-colors" data-plugin-id="${esc(p.id)}">
-        <span class="flex-1 text-sm font-medium text-slate-200">${esc(p.name)}</span>
-        <span class="text-[10px] text-slate-500">v${esc(p.version)}</span>
-        <svg class="plugin-chevron w-4 h-4 text-slate-500 transition-transform duration-200 ${open ? '' : 'collapsed'}" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path d="M19 9l-7 7-7-7"/></svg>
-      </button>
+      <div class="plugin-toggle px-4 py-3 hover:bg-slate-800/50 transition-colors cursor-pointer" data-plugin-id="${esc(p.id)}">
+        <div class="flex items-center gap-2">
+          <span class="flex-1 text-sm font-medium text-slate-200 truncate">${esc(p.name)}</span>
+          <span class="text-[10px] text-slate-500 flex-shrink-0">v${esc(p.version)}</span>
+          <svg class="plugin-chevron w-4 h-4 text-slate-500 transition-transform duration-200 flex-shrink-0 ${open ? '' : 'collapsed'}" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path d="M19 9l-7 7-7-7"/></svg>
+        </div>
+        ${p.description ? `<p class="text-[11px] text-slate-500 mt-0.5 leading-snug">${esc(p.description)}</p>` : ''}
+        ${hasFooter ? `<div class="flex items-center justify-end gap-2 mt-1">${p.author ? `<span class="text-[10px] text-slate-600">${esc(p.author)}</span>` : ''}${deleteBtn}</div>` : ''}
+      </div>
       <div class="plugin-body ${open ? '' : 'hidden'}">
         <div class="px-4 pb-3">
           ${(p.settings || []).map(s => renderSettingField(p.id, s, p.settingValues[s.key] ?? s.default)).join('')}
@@ -1132,15 +1164,26 @@ function renderPluginsPanel(list) {
     </div>`;
   }).join('');
 
-  container.querySelectorAll('.plugin-toggle').forEach(btn => {
-    btn.addEventListener('click', () => {
-      const id = btn.dataset.pluginId;
-      const body = btn.nextElementSibling;
+  container.querySelectorAll('.plugin-toggle').forEach(el => {
+    el.addEventListener('click', (e) => {
+      if (e.target.closest('.plugin-delete')) return;
+      const id = el.dataset.pluginId;
+      const card = el.closest('.plugin-card');
+      const body = card.querySelector('.plugin-body');
+      const chevron = card.querySelector('.plugin-chevron');
       if (!body) return;
-      const chevron = btn.querySelector('.plugin-chevron');
       const nowHidden = body.classList.toggle('hidden');
       chevron.classList.toggle('collapsed', nowHidden);
       setPluginExpanded(id, !nowHidden);
+    });
+  });
+
+  container.querySelectorAll('.plugin-delete').forEach(el => {
+    el.addEventListener('click', async () => {
+      const pluginId = el.dataset.pluginId;
+      const name = el.dataset.pluginName;
+      const ok = await confirmClose(`Remove plugin "${name}"? Its folder will be permanently deleted.`, 'Remove');
+      if (ok) send({ type: 'plugin.delete', pluginId });
     });
   });
 
@@ -1197,10 +1240,26 @@ function renderSettingField(pluginId, setting, value) {
 }
 
 async function loadPlugins(list) {
+  const activeIds = new Set(list.map(p => p.id));
+
+  // Clean up removed plugins: hotkeys, toolbar buttons, message handlers
+  for (const id of loadedPlugins) {
+    if (!activeIds.has(id)) {
+      unregisterAllForPlugin(id);
+      for (const [key] of pluginMessageHandlers) {
+        if (key.startsWith(`plugin.${id}.`)) pluginMessageHandlers.delete(key);
+      }
+      loadedPlugins.delete(id);
+    }
+  }
+
   renderPluginsPanel(list);
 
-  // Render server-registered toolbar actions
+  // Render server-registered toolbar actions — also clears stale client toolbar buttons
   const toolbar = document.getElementById('plugin-toolbar');
+  toolbar.querySelectorAll('.plugin-btn').forEach(b => {
+    if (!activeIds.has(b.dataset.pluginId)) b.remove();
+  });
   toolbar.querySelectorAll('.plugin-btn[data-server]').forEach(b => b.remove());
   for (const plugin of list) {
     for (const action of plugin.actions || []) {
@@ -1266,6 +1325,320 @@ function initSessionScrollbarVisibility() {
     t = setTimeout(() => el.classList.remove('is-scrolling'), 220);
   }, { passive: true });
 }
+
+// --- Remote (thin connector to clideck-remote CLI) ---
+
+const remoteModal = document.getElementById('remote-modal');
+const remotePanes = {
+  intro: document.getElementById('remote-intro'),
+  installing: document.getElementById('remote-installing'),
+  connecting: document.getElementById('remote-connecting'),
+  qr: document.getElementById('remote-qr'),
+  active: document.getElementById('remote-active'),
+  error: document.getElementById('remote-error'),
+};
+const btnRemote = document.getElementById('btn-remote');
+
+let remoteInstalled = false;
+let remoteState = 'idle'; // idle | connecting | waiting | paired
+let remoteModalOpen = false;
+let remoteStatusPoll = null;
+let remoteConnectedAt = null;
+let remoteStatsTimer = null;
+
+function startRemotePoll() {
+  stopRemotePoll();
+  remoteStatusPoll = setInterval(() => {
+    if (remoteState === 'waiting' || remoteState === 'paired') send({ type: 'remote.status' });
+    else stopRemotePoll();
+  }, 3000);
+}
+
+function stopRemotePoll() {
+  if (remoteStatusPoll) { clearInterval(remoteStatusPoll); remoteStatusPoll = null; }
+}
+
+function setRemotePane(pane) {
+  for (const [k, el] of Object.entries(remotePanes)) {
+    el.classList.toggle('hidden', k !== pane);
+  }
+}
+
+function openRemoteModal() {
+  remoteModalOpen = true;
+  remoteModal.classList.remove('hidden');
+  remoteModal.style.display = 'flex';
+}
+
+function closeRemoteModal() {
+  if (remoteState === 'paired') return; // can't dismiss while connected
+  remoteModalOpen = false;
+  remoteModal.classList.add('hidden');
+  remoteModal.style.display = '';
+  setRemoteLock(false);
+}
+
+let remoteLocked = false;
+
+function remoteLockKeyTrap(e) {
+  // Only allow Tab within the modal and the Disconnect button
+  const modal = document.getElementById('remote-modal');
+  if (modal && modal.contains(e.target)) return;
+  e.stopPropagation();
+  e.preventDefault();
+}
+
+function setRemoteLock(locked) {
+  remoteLocked = locked;
+  const modal = document.getElementById('remote-modal');
+  const closeBtn = document.getElementById('remote-close');
+  if (locked) {
+    modal.style.backdropFilter = 'blur(24px)';
+    modal.style.webkitBackdropFilter = 'blur(24px)';
+    modal.style.background = 'rgba(0,0,0,0.75)';
+    closeBtn.classList.add('hidden');
+    // Blur any focused terminal/element and trap keyboard
+    if (document.activeElement && document.activeElement !== document.body) {
+      document.activeElement.blur();
+    }
+    window.addEventListener('keydown', remoteLockKeyTrap, true);
+    window.addEventListener('keypress', remoteLockKeyTrap, true);
+    window.addEventListener('keyup', remoteLockKeyTrap, true);
+    // Focus the disconnect button so keyboard focus is inside the modal
+    const disconnectBtn = document.getElementById('remote-disconnect2');
+    if (disconnectBtn) disconnectBtn.focus();
+  } else {
+    modal.style.backdropFilter = '';
+    modal.style.webkitBackdropFilter = '';
+    modal.style.background = '';
+    closeBtn.classList.remove('hidden');
+    window.removeEventListener('keydown', remoteLockKeyTrap, true);
+    window.removeEventListener('keypress', remoteLockKeyTrap, true);
+    window.removeEventListener('keyup', remoteLockKeyTrap, true);
+  }
+}
+
+function startRemoteStats(pairedAt) {
+  if (remoteStatsTimer) { clearInterval(remoteStatsTimer); remoteStatsTimer = null; }
+  remoteConnectedAt = pairedAt || Date.now();
+  updateRemoteStats();
+  remoteStatsTimer = setInterval(updateRemoteStats, 1000);
+}
+
+function stopRemoteStats() {
+  if (remoteStatsTimer) { clearInterval(remoteStatsTimer); remoteStatsTimer = null; }
+  remoteConnectedAt = null;
+}
+
+function updateRemoteStats() {
+  if (!remoteConnectedAt) return;
+  const elapsed = Math.floor((Date.now() - remoteConnectedAt) / 1000);
+  const m = Math.floor(elapsed / 60);
+  const s = elapsed % 60;
+  const h = Math.floor(m / 60);
+  const timeStr = h > 0 ? `${h}:${String(m % 60).padStart(2, '0')}:${String(s).padStart(2, '0')}` : `${m}:${String(s).padStart(2, '0')}`;
+  const el = document.getElementById('remote-stat-time');
+  if (el) el.textContent = timeStr;
+  const sessEl = document.getElementById('remote-stat-sessions');
+  if (sessEl) sessEl.textContent = document.querySelectorAll('.group[data-id]').length || '0';
+}
+
+function updateRemoteButton() {
+  btnRemote.classList.toggle('text-blue-400', remoteState === 'waiting');
+  btnRemote.classList.toggle('text-emerald-400', remoteState === 'paired');
+  if (remoteState === 'idle' || remoteState === 'connecting') {
+    btnRemote.classList.remove('text-blue-400', 'text-emerald-400');
+  }
+}
+
+function handleRemoteStatus(msg) {
+  remoteInstalled = !!msg.installed;
+  state.remoteVersion = msg.version || (msg.installed ? null : 'not installed');
+  updateVersionFooter();
+  const wasPaired = remoteState === 'paired';
+  if (!msg.installed) {
+    remoteState = 'idle';
+    stopRemotePoll();
+    if (wasPaired) { stopRemoteStats(); setRemoteLock(false); }
+  } else if (msg.paired) {
+    const wasFresh = remoteState !== 'paired';
+    remoteState = 'paired';
+    if (!remoteStatusPoll) startRemotePoll();
+    if (wasFresh) {
+
+      setRemotePane('active');
+      setRemoteLock(true);
+      startRemoteStats(msg.pairedAt);
+      if (!remoteModalOpen) openRemoteModal();
+    }
+    const deviceEl = document.getElementById('remote-device-info');
+    if (deviceEl) {
+      const parts = [msg.deviceName, msg.location].filter(Boolean);
+      deviceEl.textContent = parts.length ? parts.join(' \u00b7 ') : '';
+    }
+  } else if (msg.connected && msg.url) {
+    remoteState = 'waiting';
+    if (wasPaired) { stopRemoteStats(); setRemoteLock(false); }
+    document.getElementById('remote-url-box').textContent = msg.url;
+    const qrImg = document.getElementById('remote-qr-img');
+    if (msg.qr && msg.qr.startsWith('data:')) { qrImg.src = msg.qr; qrImg.classList.remove('hidden'); }
+    else qrImg.classList.add('hidden');
+    startRemotePoll();
+    if (remoteModalOpen) setRemotePane('qr');
+  } else {
+    remoteState = 'idle';
+    stopRemotePoll();
+    if (wasPaired) { stopRemoteStats(); setRemoteLock(false); }
+  }
+  updateRemoteButton();
+}
+
+function handleRemotePaired(msg) {
+  remoteInstalled = true;
+  remoteState = 'waiting';
+  document.getElementById('remote-url-box').textContent = msg.url || '';
+  const qrImg = document.getElementById('remote-qr-img');
+  if (msg.qr && msg.qr.startsWith('data:')) { qrImg.src = msg.qr; qrImg.classList.remove('hidden'); }
+  else qrImg.classList.add('hidden');
+  setRemotePane('qr');
+  updateRemoteButton();
+  startRemotePoll();
+}
+
+function handleRemoteUnpaired() {
+  remoteState = 'idle';
+  stopRemotePoll();
+  stopRemoteStats();
+  setRemoteLock(false);
+  closeRemoteModal();
+  updateRemoteButton();
+}
+
+function handleRemoteError(error) {
+  document.getElementById('remote-error-text').textContent = error || 'Unknown error';
+  setRemotePane('error');
+  remoteState = 'idle';
+  stopRemotePoll();
+  updateRemoteButton();
+}
+
+function appendInstallLog(text) {
+  const log = document.getElementById('remote-install-log');
+  log.textContent += text;
+  log.scrollTop = log.scrollHeight;
+}
+
+function handleInstallDone(success) {
+  if (success) {
+    remoteInstalled = true;
+    // Installed — go straight to pairing
+    remoteState = 'connecting';
+    setRemotePane('connecting');
+    send({ type: 'remote.pair' });
+  } else {
+    const log = document.getElementById('remote-install-log');
+    log.textContent += '\n— Install failed. Check permissions or run manually:\n  npm install -g clideck-remote\n';
+    log.scrollTop = log.scrollHeight;
+  }
+}
+
+let remoteUpdateShown = false;
+
+function showRemoteUpdateToast(msg) {
+  if (remoteUpdateShown) return;
+  remoteUpdateShown = true;
+
+  const toast = document.createElement('div');
+  toast.className = 'fixed bottom-5 right-5 z-[500] w-[360px] bg-slate-800/95 backdrop-blur-sm border border-slate-700/60 rounded-xl shadow-2xl shadow-black/60';
+  toast.style.cssText = 'opacity:0;transform:translateY(12px);transition:opacity 0.3s ease,transform 0.3s ease';
+
+  toast.innerHTML = `
+    <div class="flex items-center gap-2.5 px-4 pt-3.5 pb-1">
+      <svg class="w-5 h-5 flex-shrink-0 text-blue-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"/></svg>
+      <span class="text-[13px] font-semibold text-slate-200">CliDeck Remote Update</span>
+      <button class="dismiss-btn ml-auto w-6 h-6 flex items-center justify-center rounded-md text-slate-500 hover:text-slate-300 hover:bg-slate-700/50 transition-colors">
+        <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path d="M18 6L6 18M6 6l12 12"/></svg>
+      </button>
+    </div>
+    <p class="px-4 pt-1 pb-2.5 text-xs text-slate-400 leading-relaxed">
+      Version <span class="text-slate-300">${esc(msg.latest)}</span> is available (installed: ${esc(msg.installed)}).
+    </p>
+    <div class="px-4 pb-3.5 flex items-center gap-2">
+      <button class="update-btn flex-1 px-3 py-2 text-xs font-medium bg-blue-600 hover:bg-blue-500 text-white rounded-lg transition-colors">Update</button>
+      <button class="dismiss-btn px-3 py-2 text-xs text-slate-500 hover:text-slate-300 transition-colors">Later</button>
+    </div>`;
+
+  const dismiss = () => {
+    toast.style.opacity = '0';
+    toast.style.transform = 'translateY(12px)';
+    setTimeout(() => toast.remove(), 300);
+  };
+
+  toast.querySelectorAll('.dismiss-btn').forEach(b => {
+    b.onclick = () => { dismiss(); setTimeout(() => { remoteUpdateShown = false; }, 600000); };
+  });
+
+  toast.querySelector('.update-btn').onclick = () => {
+    dismiss();
+    remoteUpdateShown = false;
+    document.getElementById('remote-install-log').textContent = '';
+    setRemotePane('installing');
+    openRemoteModal();
+    send({ type: 'remote.install' });
+  };
+
+  document.body.appendChild(toast);
+  requestAnimationFrame(() => { toast.style.opacity = '1'; toast.style.transform = 'translateY(0)'; });
+}
+
+// Button click
+btnRemote.addEventListener('click', () => {
+  if (remoteModalOpen && remoteState !== 'paired') { closeRemoteModal(); return; }
+  if (remoteModalOpen) return; // paired — can't dismiss
+  if (!remoteInstalled) {
+    setRemotePane('intro');
+    document.getElementById('remote-install-log').textContent = '';
+    openRemoteModal();
+    return;
+  }
+  if (remoteState === 'idle') {
+    remoteState = 'connecting';
+    setRemotePane('connecting');
+    openRemoteModal();
+    send({ type: 'remote.pair' });
+  } else {
+    setRemotePane(remoteState === 'paired' ? 'active' : remoteState === 'waiting' ? 'qr' : 'connecting');
+    openRemoteModal();
+  }
+});
+
+// Install button
+document.getElementById('remote-add').addEventListener('click', () => {
+  document.getElementById('remote-install-log').textContent = '';
+  setRemotePane('installing');
+  send({ type: 'remote.install' });
+});
+
+// Close / disconnect
+document.getElementById('remote-close').addEventListener('click', closeRemoteModal);
+document.getElementById('remote-error-dismiss').addEventListener('click', closeRemoteModal);
+
+document.getElementById('remote-copy').addEventListener('click', () => {
+  navigator.clipboard.writeText(document.getElementById('remote-url-box').textContent).then(() => {
+    const btn = document.getElementById('remote-copy');
+    btn.textContent = 'copied!';
+    setTimeout(() => { btn.textContent = 'copy the link'; }, 1500);
+  });
+});
+document.getElementById('remote-url-box').addEventListener('click', () => {
+  navigator.clipboard.writeText(document.getElementById('remote-url-box').textContent);
+});
+
+function doRemoteDisconnect() {
+  send({ type: 'remote.unpair' });
+}
+document.getElementById('remote-disconnect').addEventListener('click', doRemoteDisconnect);
+document.getElementById('remote-disconnect2').addEventListener('click', doRemoteDisconnect);
 
 async function boot() {
   registerServiceWorker();

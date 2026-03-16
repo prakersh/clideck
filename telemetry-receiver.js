@@ -32,7 +32,7 @@ function handleLogs(req, res) {
     const resAttrs = parseAttrs(rl.resource?.attributes);
     const sessionId = resAttrs['clideck.session_id'];
 
-    // DEBUG: log all incoming telemetry with resource attributes
+    // service.name values: claude-code, codex_cli_rs, gemini-cli
     const serviceName = resAttrs['service.name'] || 'unknown';
     let resolvedId = sessionId;
 
@@ -68,6 +68,41 @@ function handleLogs(req, res) {
       for (const lr of sl.logRecords || []) {
         const attrs = parseAttrs(lr.attributes);
 
+        const eventName = attrs['event.name'];
+        // if (serviceName === 'codex_cli_rs' && eventName) console.log(`[telemetry:codex] ${eventName}`);
+        // if (serviceName === 'gemini-cli' && eventName) console.log(`[telemetry:gemini] ${eventName}`);
+
+        // Telemetry-based status
+        const startEvents = new Set(['user_prompt', 'gemini_cli.user_prompt', 'codex.user_prompt']);
+        if (startEvents.has(eventName)) {
+          broadcastFn?.({ type: 'session.status', id: resolvedId, working: true, source: 'telemetry' });
+        }
+        // Claude: telemetry-only status. user_prompt/any event → working, api_request → idle.
+        if (serviceName === 'claude-code' && eventName) {
+          if (eventName === 'api_request') {
+            broadcastFn?.({ type: 'session.status', id: resolvedId, working: false, source: 'telemetry' });
+          } else if (eventName !== 'user_prompt') {
+            broadcastFn?.({ type: 'session.status', id: resolvedId, working: true, source: 'telemetry' });
+          }
+        }
+        // Codex: telemetry-only status. codex.user_prompt/any event → working, codex.sse_event → idle.
+        if (serviceName === 'codex_cli_rs' && eventName) {
+          if (eventName === 'codex.sse_event') {
+            broadcastFn?.({ type: 'session.status', id: resolvedId, working: false, source: 'telemetry' });
+          } else if (eventName !== 'codex.user_prompt') {
+            broadcastFn?.({ type: 'session.status', id: resolvedId, working: true, source: 'telemetry' });
+          }
+        }
+        // Gemini: telemetry-only status. Whitelisted events → working, api_response (role=main) → idle.
+        if (serviceName === 'gemini-cli' && eventName) {
+          if (eventName === 'gemini_cli.api_response' && attrs['role'] === 'main') {
+            broadcastFn?.({ type: 'session.status', id: resolvedId, working: false, source: 'telemetry' });
+          } else if (eventName === 'gemini_cli.api_request' || eventName === 'gemini_cli.model_routing'
+            || (eventName === 'gemini_cli.api_response' && attrs['role'] !== 'main')) {
+            broadcastFn?.({ type: 'session.status', id: resolvedId, working: true, source: 'telemetry' });
+          }
+        }
+
         const agentSessionId = attrs['session.id'] || attrs['conversation.id'];
         if (agentSessionId && sess) {
           // Prefer interactive session ID (Gemini sends non-interactive init events first)
@@ -81,14 +116,6 @@ function handleLogs(req, res) {
       }
     }
 
-    // DEBUG: dump attributes if we haven't captured a session ID yet
-    if (!captured && sess && !sess.sessionToken && resolvedId) {
-      const allAttrs = [];
-      for (const sl of rl.scopeLogs || []) {
-        for (const lr of sl.logRecords || []) allAttrs.push(Object.keys(parseAttrs(lr.attributes)));
-      }
-      console.log(`Telemetry [${agent}]: no session.id found. Record attrs: ${JSON.stringify([...new Set(allAttrs.flat())])}`);
-    }
   }
 
   res.writeHead(200).end('{}');

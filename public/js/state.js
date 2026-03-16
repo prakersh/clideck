@@ -16,6 +16,7 @@ export const state = {
     user: null,
     loggingOut: false,
   },
+  remoteVersion: null,
 };
 
 export function send(msg) {

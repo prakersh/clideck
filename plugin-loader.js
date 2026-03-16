@@ -1,4 +1,4 @@
-const { readdirSync, readFileSync, existsSync, mkdirSync, cpSync } = require('fs');
+const { readdirSync, readFileSync, existsSync, mkdirSync, cpSync, rmSync } = require('fs');
 const { join, sep } = require('path');
 const { DATA_DIR } = require('./paths');
 
@@ -32,6 +32,7 @@ const plugins = new Map();
 const inputHooks = [];
 const outputHooks = [];
 const statusHooks = [];
+const transcriptHooks = [];
 const sessionStatus = new Map(); // sessionId → boolean (dedup multi-client reports)
 const frontendHandlers = new Map();
 let broadcastFn = null;
@@ -41,7 +42,7 @@ let saveConfigFn = null;
 const settingsChangeHandlers = new Map(); // pluginId → [fn]
 
 function removeHooks(pluginId) {
-  for (const arr of [inputHooks, outputHooks, statusHooks]) {
+  for (const arr of [inputHooks, outputHooks, statusHooks, transcriptHooks]) {
     for (let i = arr.length - 1; i >= 0; i--) {
       if (arr[i].pluginId === pluginId) arr.splice(i, 1);
     }
@@ -111,6 +112,7 @@ function buildApi(pluginId, pluginDir, state) {
     onSessionInput(fn) { inputHooks.push({ pluginId, fn }); },
     onSessionOutput(fn) { outputHooks.push({ pluginId, fn }); },
     onStatusChange(fn) { statusHooks.push({ pluginId, fn }); },
+    onTranscriptEntry(fn) { transcriptHooks.push({ pluginId, fn }); },
 
     sendToFrontend(event, data = {}) {
       broadcastFn?.({ ...data, type: `plugin.${pluginId}.${event}` });
@@ -184,6 +186,13 @@ function notifyStatus(id, working) {
   }
 }
 
+function notifyTranscript(id, role, text) {
+  for (const h of transcriptHooks) {
+    try { h.fn(id, role, text); }
+    catch (e) { console.error(`[plugin:${h.pluginId}] transcript error: ${e.message}`); }
+  }
+}
+
 function updateSetting(pluginId, key, value) {
   // Validate plugin exists (also prevents __proto__ pollution — Map lookup returns undefined)
   const plugin = plugins.get(pluginId);
@@ -247,6 +256,7 @@ function getInfo() {
     settingValues: cfg?.pluginSettings?.[p.manifest.id] || {},
     actions: p.actions,
     hasClient: existsSync(join(p.dir, 'client.js')),
+    bundled: BUNDLED_IDS.has(p.manifest.id),
   }));
 }
 
@@ -280,8 +290,34 @@ function shutdown() {
 
 function clearStatus(id) { sessionStatus.delete(id); }
 
+// Bundled plugin IDs — these ship with CliDeck and must not be deleted
+const BUNDLED_IDS = new Set(
+  existsSync(BUNDLED_DIR)
+    ? readdirSync(BUNDLED_DIR, { withFileTypes: true }).filter(e => e.isDirectory()).map(e => e.name)
+    : []
+);
+
+function removePlugin(pluginId) {
+  if (BUNDLED_IDS.has(pluginId)) return { success: false, message: 'Cannot remove a built-in plugin' };
+  const state = plugins.get(pluginId);
+  if (!state) return { success: false, message: 'Plugin not found' };
+  // Delete plugin directory first — if this fails, runtime state stays intact
+  try {
+    rmSync(state.dir, { recursive: true, force: true });
+  } catch (e) {
+    return { success: false, message: e.message };
+  }
+  // Filesystem gone — now clean up runtime state
+  for (const fn of state.shutdownFns) { try { fn(); } catch {} }
+  removeHooks(pluginId);
+  plugins.delete(pluginId);
+  console.log(`[plugin] removed ${pluginId}`);
+  return { success: true };
+}
+
 module.exports = {
+  PLUGINS_DIR, BUNDLED_IDS,
   init, shutdown,
-  transformInput, notifyOutput, notifyStatus, clearStatus,
-  handleMessage, updateSetting, getInfo, resolveFile,
+  transformInput, notifyOutput, notifyStatus, notifyTranscript, clearStatus,
+  handleMessage, updateSetting, getInfo, resolveFile, removePlugin,
 };

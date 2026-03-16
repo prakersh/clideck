@@ -3,7 +3,7 @@ const { join } = require('path');
 const os = require('os');
 const { openDb } = require('./db');
 const { DATA_DIR } = require('./paths');
-const { defaultShell } = require('./utils');
+const { defaultShell, binName } = require('./utils');
 const {
   discoverAliasCommands,
   getPresets,
@@ -33,6 +33,11 @@ const DEFAULTS = {
 function deepCopy(obj) { return JSON.parse(JSON.stringify(obj)); }
 const PRESETS = getPresets();
 
+function matchPreset(cmd) {
+  const bin = binName(cmd.command);
+  return PRESETS.find(p => binName(p.command) === bin);
+}
+
 function normalize(input, { discoverAliases = false } = {}) {
   const cfg = { ...deepCopy(DEFAULTS), ...deepCopy(input || {}) };
   if (!Array.isArray(cfg.commands) || !cfg.commands.length) cfg.commands = deepCopy(DEFAULTS.commands);
@@ -49,16 +54,36 @@ function normalize(input, { discoverAliases = false } = {}) {
 
   // Backfill and sync fields from presets and alias-matched variants.
   for (const cmd of cfg.commands) {
-    syncCommandWithPreset(cmd);
-    if (!cmd.icon) cmd.icon = 'terminal';
+    const preset = cmd.presetId ? PRESETS.find(p => p.presetId === cmd.presetId) : matchPreset(cmd);
+    // Stamp presetId for reliable lookup
+    if (preset && !cmd.presetId) cmd.presetId = preset.presetId;
+    // Icon always syncs from preset — the preset is the source of truth for logos
+    if (preset) cmd.icon = preset.icon;
+    else if (!cmd.icon) cmd.icon = 'terminal';
+    if (cmd.isAgent === undefined)          cmd.isAgent = preset?.isAgent ?? false;
+    if (cmd.canResume === undefined)        cmd.canResume = preset?.canResume ?? false;
+    if (cmd.resumeCommand === undefined)    cmd.resumeCommand = preset?.resumeCommand || null;
+    if (cmd.sessionIdPattern === undefined) cmd.sessionIdPattern = preset?.sessionIdPattern || null;
+    if (cmd.outputMarker === undefined)     cmd.outputMarker = preset?.outputMarker || null;
+    // Claude Code telemetry is built-in, always on
+    if (preset?.presetId === 'claude-code') cmd.telemetryEnabled = true;
+    else if (cmd.telemetryEnabled === undefined) cmd.telemetryEnabled = false;
+    if (cmd.telemetryStatus === undefined)  cmd.telemetryStatus = null;
+    // Sync bridge config from preset
+    if (preset?.bridge) cmd.bridge = preset.bridge;
+    // Codex: add --no-alt-screen to avoid blank screen in embedded xterm
+    if (preset?.presetId === 'codex') {
+      if (cmd.command === 'codex') cmd.command = preset.command;
+      if (cmd.resumeCommand === 'codex resume {{sessionId}}') cmd.resumeCommand = preset.resumeCommand;
+    }
   }
 
   // Auto-add any shipped presets not yet in the commands list
   for (const preset of PRESETS) {
-    const exists = cfg.commands.some(c => c.presetId === preset.presetId && c.command === preset.command);
+    const exists = cfg.commands.some(c => c.presetId === preset.presetId || matchPreset(c)?.presetId === preset.presetId);
     if (!exists) {
       cfg.commands.push({
-        id: crypto.randomUUID(), label: preset.name, icon: preset.icon,
+        id: crypto.randomUUID(), presetId: preset.presetId, label: preset.name, icon: preset.icon,
         command: preset.command, enabled: true, defaultPath: '',
         isAgent: preset.isAgent, canResume: preset.canResume,
         resumeCommand: preset.resumeCommand, sessionIdPattern: preset.sessionIdPattern,

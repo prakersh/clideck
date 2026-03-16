@@ -1,5 +1,5 @@
 import { state, send } from './state.js';
-import { esc, agentIcon, findPresetForCommand } from './utils.js';
+import { esc, agentIcon, binName } from './utils.js';
 import { openFolderPicker } from './folder-picker.js';
 import { estimateSize } from './terminals.js';
 import { showToast } from './toast.js';
@@ -21,43 +21,84 @@ function randomName() {
   return `${a} ${b}`;
 }
 
-function renderCommandButtons() {
-  const commands = sortedCommands();
-  if (!commands.length) {
-    return `<div class="px-3 py-2 text-xs text-slate-500">No enabled commands. Turn one on in Settings.</div>`;
-  }
-  return commands.map(cmd => {
-    const preset = findPresetForCommand(cmd.command, state.presets, cmd.presetId);
-    const missing = preset?.available === false;
-    const subtitle = missing ? (preset.installCmd || 'Not installed') : cmd.command;
-    return `
-      <button class="command-btn w-full flex items-center gap-2.5 px-3 py-2 rounded-md hover:bg-slate-700/70 text-sm transition-colors text-left ${missing ? 'text-slate-500' : 'text-slate-300'}" data-command-id="${cmd.id}">
-        <span class="${missing ? 'opacity-40' : ''}">${agentIcon(cmd.icon, 24)}</span>
+function findCommandForPreset(p) {
+  return state.cfg.commands.find(c => c.presetId === p.presetId)
+    || state.cfg.commands.find(c => binName(c.command) === binName(p.command));
+}
+
+// True if preset binary is missing and the configured command is unchanged from the preset default
+function isPresetMissing(p) {
+  if (p.available !== false) return false;
+  const cmd = findCommandForPreset(p);
+  if (!cmd || cmd.enabled === false) return true;
+  // User changed the command from the preset default — trust it
+  return cmd.command === p.command;
+}
+
+function renderPresetButtons() {
+  return sortedPresets().map(p => {
+    const missing = isPresetMissing(p);
+    if (missing) {
+      return `
+      <div class="w-full flex items-center gap-2.5 px-3 py-2 rounded-md text-sm text-left text-slate-500">
+        <span class="opacity-40">${agentIcon(p.icon, 24)}</span>
         <span class="flex-1 min-w-0">
-          <span class="block truncate">${esc(cmd.label || 'Untitled')}</span>
-          <span class="block text-[10px] text-slate-600 truncate">${esc(subtitle)}</span>
+          <span>${esc(p.name)}</span>
+        </span>
+        <button class="install-btn px-2.5 py-1 text-[11px] font-medium text-blue-400 hover:text-blue-300 bg-blue-500/10 hover:bg-blue-500/20 rounded-md transition-colors" data-preset="${p.presetId}">Add</button>
+      </div>`;
+    }
+    return `
+      <button class="preset-btn w-full flex items-center gap-2.5 px-3 py-2 rounded-md hover:bg-slate-700/70 text-sm transition-colors text-left text-slate-300" data-preset="${p.presetId}">
+        <span>${agentIcon(p.icon, 24)}</span>
+        <span class="flex-1 min-w-0">
+          <span>${esc(p.name)}</span>
         </span>
       </button>`;
   }).join('');
 }
 
-function sortWithMru(commands) {
+function sortedPresets() {
+  const all = [...state.presets].filter(p => {
+    if (isPresetMissing(p)) return true;
+    const cmd = findCommandForPreset(p);
+    return !cmd || cmd.enabled !== false;
+  });
+  const shell = all.filter(p => !p.isAgent);
+  const agents = all.filter(p => p.isAgent);
   const lastId = localStorage.getItem(MRU_KEY);
   if (lastId) {
-    const idx = commands.findIndex(cmd => cmd.id === lastId);
-    if (idx > 0) commands.unshift(...commands.splice(idx, 1));
+    const idx = agents.findIndex(p => p.presetId === lastId);
+    if (idx > 0) agents.unshift(...agents.splice(idx, 1));
   }
-  return commands;
+  return [...agents, ...shell];
 }
 
-function sortedCommands() {
-  const enabled = [...state.cfg.commands].filter(cmd => cmd.enabled !== false);
-  const agents = sortWithMru(enabled.filter(cmd => cmd.isAgent));
-  const others = sortWithMru(enabled.filter(cmd => !cmd.isAgent));
-  return [...agents, ...others];
-}
-
-function createFromCommand(cmd, sessionName, cwd, projectId) {
+function createFromPreset(preset, sessionName, cwd, projectId) {
+  // Find existing command matching this preset
+  let cmd = findCommandForPreset(preset);
+  // Auto-create the command if it doesn't exist yet
+  if (!cmd) {
+    cmd = {
+      id: crypto.randomUUID(),
+      presetId: preset.presetId,
+      label: preset.name,
+      icon: preset.icon,
+      command: preset.command,
+      enabled: true,
+      defaultPath: '',
+      isAgent: preset.isAgent,
+      canResume: preset.canResume,
+      resumeCommand: preset.resumeCommand,
+      sessionIdPattern: preset.sessionIdPattern,
+      outputMarker: preset.outputMarker || null,
+      telemetryEnabled: preset.presetId === 'claude-code',
+      telemetryStatus: preset.presetId === 'claude-code' ? { ok: true } : null,
+      bridge: preset.bridge,
+    };
+    state.cfg.commands.push(cmd);
+    send({ type: 'config.update', config: state.cfg });
+  }
   send({ type: 'create', commandId: cmd.id, name: sessionName, cwd, projectId: projectId || undefined, ...estimateSize() });
   localStorage.setItem(MRU_KEY, cmd.id);
 }
@@ -95,7 +136,7 @@ export function openCreator() {
       </button>
     </div>
     <div id="creator-presets" class="space-y-0.5">
-      ${renderCommandButtons()}
+      ${renderPresetButtons()}
     </div>`;
 
   const list = document.getElementById('session-list');
@@ -172,33 +213,89 @@ export function openCreator() {
     });
   }
 
+  // "Add" button for missing agents — opens install toaster
   card.addEventListener('click', (e) => {
-    const btn = e.target.closest('.command-btn');
-    if (!btn) return;
-    const cmd = state.cfg.commands.find(command => command.id === btn.dataset.commandId);
-    if (!cmd) return;
-    const preset = findPresetForCommand(cmd.command, state.presets, cmd.presetId);
-    if (preset?.available === false && preset.installCmd) {
-      navigator.clipboard.writeText(preset.installCmd).then(
-        () => showToast(`Install command copied: <code class="text-slate-200">${esc(preset.installCmd)}</code>`, { html: true, duration: 4000 }),
-        () => showToast(`Run: ${preset.installCmd}`, { duration: 4000 }),
-      );
+    const installBtn = e.target.closest('.install-btn');
+    if (installBtn) {
+      const preset = state.presets.find(p => p.presetId === installBtn.dataset.preset);
+      if (preset?.installCmd) showInstallToast(preset);
       return;
     }
+    const btn = e.target.closest('.preset-btn');
+    if (!btn) return;
+    const preset = state.presets.find(p => p.presetId === btn.dataset.preset);
+    if (!preset) return;
     const name = nameInput.value.trim() || fallbackName;
     const cwd = cwdInput.value.trim() || undefined;
     const projectSelect = card.querySelector('#creator-project');
     const projectId = projectSelect?.value || undefined;
-    createFromCommand(cmd, name, cwd, projectId);
+    createFromPreset(preset, name, cwd, projectId);
     closeCreator();
   });
 }
 
 export function refreshCreator() {
   const container = document.getElementById('creator-presets');
-  if (container) container.innerHTML = renderCommandButtons();
+  if (container) container.innerHTML = renderPresetButtons();
 }
 
 export function closeCreator() {
   document.getElementById('session-creator')?.remove();
+}
+
+function showInstallToast(preset) {
+  // Remove existing install toast
+  document.getElementById('install-toast')?.remove();
+
+  const toast = document.createElement('div');
+  toast.id = 'install-toast';
+  toast.className = 'fixed bottom-5 right-5 z-[500] w-[360px] bg-slate-800/95 backdrop-blur-sm border border-slate-700/60 rounded-xl shadow-2xl shadow-black/60';
+  toast.style.cssText = 'opacity:0;transform:translateY(12px);transition:opacity 0.3s ease,transform 0.3s ease';
+
+  toast.innerHTML = `
+    <div class="flex items-center gap-2.5 px-4 pt-3.5 pb-1">
+      ${agentIcon(preset.icon, 20)}
+      <span class="text-[13px] font-semibold text-slate-200">Add ${esc(preset.name)}</span>
+      <button class="dismiss-btn ml-auto w-6 h-6 flex items-center justify-center rounded-md text-slate-500 hover:text-slate-300 hover:bg-slate-700/50 transition-colors">
+        <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path d="M18 6L6 18M6 6l12 12"/></svg>
+      </button>
+    </div>
+    <p class="px-4 pt-1 pb-2.5 text-xs text-slate-400 leading-relaxed">This will install ${esc(preset.name)} on your machine using:</p>
+    <div class="mx-4 mb-3 px-3 py-2.5 bg-slate-900/70 rounded-lg border border-slate-700/40">
+      <pre class="text-[11px] text-emerald-400/80 font-mono leading-relaxed whitespace-pre-wrap">${esc(preset.installCmd)}</pre>
+    </div>
+    <div class="px-4 pb-3.5 flex items-center gap-2">
+      <button class="add-btn flex-1 px-3 py-2 text-xs font-medium bg-blue-600 hover:bg-blue-500 text-white rounded-lg transition-colors">Add Agent</button>
+      <button class="dismiss-btn px-3 py-2 text-xs text-slate-500 hover:text-slate-300 transition-colors">Cancel</button>
+    </div>`;
+
+  const dismiss = () => {
+    toast.style.opacity = '0';
+    toast.style.transform = 'translateY(12px)';
+    setTimeout(() => toast.remove(), 300);
+  };
+
+  toast.querySelectorAll('.dismiss-btn').forEach(b => b.onclick = dismiss);
+
+  toast.querySelector('.add-btn').onclick = () => {
+    dismiss();
+    closeCreator();
+    // Find or create the shell command, then spawn a session running the install
+    const shellCmd = state.cfg.commands.find(c => c.presetId === 'shell' || (!c.isAgent && !c.presetId));
+    if (!shellCmd) return;
+    const installId = crypto.randomUUID();
+    send({ type: 'create', commandId: shellCmd.id, name: `Installing ${preset.name}`, installId, ...estimateSize() });
+    const handler = (e) => {
+      const msg = JSON.parse(e.data);
+      if (msg.type !== 'created' || msg.installId !== installId) return;
+      cleanup();
+      setTimeout(() => send({ type: 'input', id: msg.id, data: preset.installCmd + '\r' }), 300);
+    };
+    const cleanup = () => { state.ws.removeEventListener('message', handler); clearTimeout(timer); };
+    const timer = setTimeout(cleanup, 10000);
+    state.ws.addEventListener('message', handler);
+  };
+
+  document.body.appendChild(toast);
+  requestAnimationFrame(() => { toast.style.opacity = '1'; toast.style.transform = 'translateY(0)'; });
 }

@@ -318,7 +318,7 @@ export function addTerminal(id, name, themeId, commandId, projectId, muted, last
   const statusEl = item.querySelector('.session-status');
   const cmd = state.cfg.commands.find(c => c.id === commandId);
   const hasBridge = !!cmd?.bridge;
-  const stopBounce = hasBridge ? null : startBounce(statusEl);
+  const stopBounce = null;
 
   const el = document.createElement('div');
   el.className = 'term-wrap';
@@ -332,30 +332,69 @@ export function addTerminal(id, name, themeId, commandId, projectId, muted, last
     // Keep ANSI/truecolor output readable across dark and light terminal themes.
     minimumContrastRatio: MIN_CONTRAST_RATIO,
     cursorBlink: true,
-    scrollback: 5000,
+    scrollback: 10000,
   });
   const fit = new FitAddon.FitAddon();
   term.loadAddon(fit);
   term.onData(data => send({ type: 'input', id, data }));
 
+  // [SCREEN-CAPTURE] extract terminal buffer when BOTH idle AND render-silent (2s)
+  // Decoupled from status: telemetry knows when agent is done, onRender knows when terminal is done
+  const _telemetryOnly = cmd?.presetId === 'claude-code' || cmd?.presetId === 'codex' || cmd?.presetId === 'gemini-cli';
+  let _screenTimer = null, _renderSilent = false;
+  function _tryScreenCapture() {
+    const entry = state.terms.get(id);
+    if (!entry?.pendingScreenCapture || (!_renderSilent && !_telemetryOnly) || !entry.term) return;
+    entry.pendingScreenCapture = false;
+    const buf = entry.term.buffer.active;
+    const lines = [];
+    for (let i = 0; i < buf.length; i++) { const line = buf.getLine(i); if (line) lines.push(line.translateToString(true)); }
+    send({ type: 'terminal.buffer', id, lines });
+  }
+  let _idleTimer = null, _workTimer = null, _lastTyping = 0, _lastRender = 0;
+  term.onData(() => { _lastTyping = Date.now(); });
+  term.onRender(() => {
+    _lastRender = Date.now();
+    _renderSilent = false;
+    clearTimeout(_screenTimer);
+    _screenTimer = setTimeout(() => { _renderSilent = true; _tryScreenCapture(); }, 2000);
+  });
+  term.onWriteParsed(() => { if (Date.now() - _lastTyping < 500) return; const entry = state.terms.get(id); if (entry) entry.lastRenderAt = Date.now(); if (_telemetryOnly) return; if (!_workTimer) _workTimer = setTimeout(() => { _workTimer = null; if (Date.now() - _lastRender < 500) setStatus(id, true); }, 1500); clearTimeout(_idleTimer); _idleTimer = setTimeout(() => { clearTimeout(_workTimer); _workTimer = null; setStatus(id, false); send({ type: 'session.statusReport', id, working: false }); }, 1500); });
+
+  // Expose capture function so setStatus can trigger it when idle arrives after render silence
+  setTimeout(() => { const e = state.terms.get(id); if (e) e.tryScreenCapture = _tryScreenCapture; }, 0);
+
   term.open(el);
   attachToTerminal(term);
   let fitted = false, pending = [];
-  const ro = new ResizeObserver(() => {
-    if (!el.offsetWidth) return;
+  // [FIT-GUARD] only call fit() when proposed dimensions actually change — prevents
+  // unnecessary buffer reflows that cause scrollbar jumpiness on sub-pixel layout shifts
+  let fitRaf = 0;
+  function doFit() {
+    const dims = fit.proposeDimensions();
+    if (!dims || (dims.cols === term.cols && dims.rows === term.rows)) return;
     fit.fit();
     send({ type: 'resize', id, cols: term.cols, rows: term.rows });
+  }
+  const ro = new ResizeObserver(() => {
+    if (!el.offsetWidth) return;
     if (!fitted) {
       fitted = true;
+      fit.fit();
+      send({ type: 'resize', id, cols: term.cols, rows: term.rows });
       for (const chunk of pending) term.write(chunk);
       pending = null;
       updatePreview(id);
+      return;
     }
+    if (fitRaf) return;
+    fitRaf = requestAnimationFrame(() => { fitRaf = 0; doFit(); });
   });
   ro.observe(el);
   // Safety: if RO hasn't fired within 500ms, flush anyway to avoid unbounded queue
   setTimeout(() => { if (!fitted) { fitted = true; for (const chunk of pending) term.write(chunk); pending = null; updatePreview(id); } }, 500);
-  state.terms.set(id, { term, fit, el, ro, themeId, commandId, projectId: projectId || null, muted: !!muted, working: !hasBridge, workStartedAt: hasBridge ? null : Date.now(), stopBounce, queue: (data) => { if (!fitted) { pending.push(data); return true; } return false; }, lastActivityAt: Date.now(), unread: false, lastPreviewText: lastPreview || '', searchText: '' });
+  const cancelFitRaf = () => { if (fitRaf) { cancelAnimationFrame(fitRaf); fitRaf = 0; } };
+  state.terms.set(id, { term, fit, el, ro, cancelFitRaf, themeId, commandId, projectId: projectId || null, muted: !!muted, working: false, workStartedAt: null, stopBounce, queue: (data) => { if (!fitted) { pending.push(data); return true; } return false; }, lastActivityAt: Date.now(), unread: false, lastPreviewText: lastPreview || '', searchText: '' });
   document.getElementById('empty').style.display = 'none';
   document.getElementById('terminals').style.pointerEvents = '';
   if (muted) requestAnimationFrame(() => updateMuteIndicator(id));
@@ -367,6 +406,7 @@ export function removeTerminal(id) {
   const entry = state.terms.get(id);
   if (!entry) return;
   if (entry.stopBounce) entry.stopBounce();
+  entry.cancelFitRaf?.();
   entry.ro?.disconnect();
   entry.term.dispose();
   entry.el.remove();
@@ -499,6 +539,10 @@ function setStatus(id, working) {
       }
     }
   }
+
+  // Mark idle so the onRender silence watcher can capture .screen
+  // Also try immediately — renders may already be silent
+  if (wasWorking && !working) { entry.pendingScreenCapture = true; entry.tryScreenCapture?.(); }
 
   if (working) entry.workStartedAt = Date.now();
 

@@ -23,7 +23,7 @@
     --color-stats-bg: rgba(0, 0, 0, 0.95);
     --color-accent-subtle: rgba(59, 130, 246, 0.15);
     --color-rail: #1d1f1f;
-    --color-rail-active: #292a2a;
+    --color-rail-active: #2a323f;
     --color-sidebar: #161717;
     --color-sidebar-input: #0f1010;
     --color-sidebar-border: #2e2f2f;
@@ -296,6 +296,10 @@ html { transition: color 0.3s ease, background-color 0.3s ease; }
 /* Drag & drop */
 .drop-highlight {
   @apply bg-blue-500/10 ring-1 ring-blue-500/30 rounded;
+}
+.project-drop-line {
+  height: 2px;
+  @apply bg-blue-500 rounded-full mx-2 my-0.5;
 }
 
 /* Project chevron rotation — down by default, right when collapsed */
