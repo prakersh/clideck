@@ -59,8 +59,8 @@ function parseVersion(text) {
 }
 
 function getInstalledVersion(bin) {
-  try { return parseVersion(execFileSync(bin, ['--version'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] })); } catch {}
-  try { return parseVersion(execFileSync(bin, ['-v'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] })); } catch {}
+  try { return parseVersion(execFileSync(bin, ['--version'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 5000, killSignal: 'SIGKILL' })); } catch {}
+  try { return parseVersion(execFileSync(bin, ['-v'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 5000, killSignal: 'SIGKILL' })); } catch {}
   return '';
 }
 
@@ -100,7 +100,7 @@ function checkAvailability() {
     const bin = binName(p.command);
     const hasAlias = getAliasesForPreset(p.presetId).length > 0;
     try {
-      if (!hasAlias) execFileSync(whichCmd, [bin], { stdio: 'ignore' });
+      if (!hasAlias) execFileSync(whichCmd, [bin], { stdio: 'ignore', timeout: 2000 });
       p.available = true;
       p.version = getInstalledVersion(bin);
       p.versionOk = !p.minVersion || !p.version || compareVersions(p.version, p.minVersion) >= 0;
