@@ -6,7 +6,7 @@ const { refreshSocketAuth } = require('./auth');
 const config = require('./config');
 const sessions = require('./sessions');
 const themes = require('./themes');
-const { listDirs, binName } = require('./utils');
+const { listDirs, binName, expandHomePath } = require('./utils');
 const {
   findPresetForCommand,
   getAliasesForPreset,
@@ -281,7 +281,8 @@ function onConnection(ws) {
       }
 
       case 'dirs.list': {
-        const target = msg.path || cfg.defaultPath;
+        const requestedPath = msg.path || cfg.defaultPath;
+        const target = expandHomePath(requestedPath);
         const result = listDirs(target);
         const entries = Array.isArray(result) ? result : [];
         const error = result.error || undefined;

@@ -1,6 +1,6 @@
 import { state, send } from './state.js';
 import { esc, findPresetForCommand } from './utils.js';
-import { addTerminal, removeTerminal, select, startRename, startProjectRename, setSessionTheme, openMenu, closeMenu, setStatus, updateMuteIndicator, updatePreview, markUnread, applyFilter, setTab, renderResumable, regroupSessions, toggleProjectCollapse, setSessionProject, estimateSize, restartComplete, positionMenu } from './terminals.js';
+import { addTerminal, removeTerminal, select, startRename, startProjectRename, setSessionTheme, openMenu, closeMenu, setStatus, updateMuteIndicator, updatePreview, markUnread, applyFilter, setTab, renderResumable, regroupSessions, toggleProjectCollapse, setSessionProject, estimateSize, restartComplete, positionMenu, setLayoutMode, fitVisibleTerminals, writeOutput } from './terminals.js';
 import { renderSettings, updateVersionFooter } from './settings.js';
 import { openCreator, closeCreator, refreshCreator } from './creator.js';
 import { handleDirsResponse, openFolderPicker } from './folder-picker.js';
@@ -26,66 +26,101 @@ const authPassword = document.getElementById('auth-password');
 
 function registerServiceWorker() {
   if (!('serviceWorker' in navigator)) return;
+  if (!window.isSecureContext) return;
   if (location.protocol !== 'https:' && !LOCALHOST_HOSTS.has(location.hostname)) return;
   window.addEventListener('load', () => {
     navigator.serviceWorker.register('/sw.js')
-      .catch((error) => console.warn('[pwa] service worker registration failed:', error));
+      .then(() => {
+        pwaInstallState.swRegistered = true;
+        pwaInstallState.swRegistrationError = null;
+      })
+      .catch((error) => {
+        pwaInstallState.swRegistered = false;
+        pwaInstallState.swRegistrationError = error;
+        console.warn('[pwa] service worker registration failed:', error);
+      });
   });
 }
 
 // PWA Install prompt
 let deferredInstallPrompt = null;
+const mobileInstallButton = document.getElementById('mobile-install-btn');
+const pwaInstallState = {
+  swRegistered: false,
+  swRegistrationError: null,
+};
 
 function setupPWAInstall() {
+  const displayModeQuery = window.matchMedia('(display-mode: standalone)');
+
+  const isStandalone = () => (
+    displayModeQuery.matches
+    || window.matchMedia('(display-mode: fullscreen)').matches
+    || window.navigator.standalone === true
+  );
+
+  const syncInstallButton = () => {
+    if (!mobileInstallButton) return;
+    mobileInstallButton.hidden = isStandalone();
+  };
+
   window.addEventListener('beforeinstallprompt', (e) => {
     e.preventDefault();
     deferredInstallPrompt = e;
-    showInstallBanner();
+    syncInstallButton();
   });
 
   window.addEventListener('appinstalled', () => {
     deferredInstallPrompt = null;
-    hideInstallBanner();
+    syncInstallButton();
     showToast('CliDeck installed successfully!');
   });
-}
+  mobileInstallButton?.addEventListener('click', async () => {
+    if (isStandalone()) {
+      syncInstallButton();
+      return;
+    }
 
-function showInstallBanner() {
-  if (document.getElementById('pwa-install-banner')) return;
-  if (sessionStorage.getItem('pwa-banner-dismissed')) return;
-  const banner = document.createElement('div');
-  banner.id = 'pwa-install-banner';
-  banner.className = 'fixed bottom-4 left-4 right-4 z-[500] flex items-center gap-3 px-4 py-3 rounded-xl border border-slate-600/80 bg-slate-800/95 backdrop-blur-md shadow-2xl shadow-black/40 animate-slide-up';
-  banner.innerHTML = `
-    <img src="/img/clideck-logo-icon.png" class="w-10 h-10 rounded-lg" alt="CliDeck">
-    <div class="flex-1 min-w-0">
-      <div class="text-sm font-semibold text-slate-100">Install CliDeck</div>
-      <div class="text-xs text-slate-400">Add to home screen for quick access</div>
-    </div>
-    <button id="pwa-install-btn" class="px-4 py-2 text-sm font-semibold rounded-lg bg-blue-500 text-white hover:bg-blue-400 transition-colors">Install</button>
-    <button id="pwa-dismiss-btn" class="p-1.5 text-slate-500 hover:text-slate-300 transition-colors" title="Dismiss">
-      <svg class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path d="M6 18L18 6M6 6l12 12"/></svg>
-    </button>
-  `;
-  document.body.appendChild(banner);
+    if (deferredInstallPrompt) {
+      deferredInstallPrompt.prompt();
+      const { outcome } = await deferredInstallPrompt.userChoice;
+      if (outcome === 'accepted') deferredInstallPrompt = null;
+      syncInstallButton();
+      return;
+    }
 
-  document.getElementById('pwa-install-btn').addEventListener('click', async () => {
-    if (!deferredInstallPrompt) return;
-    deferredInstallPrompt.prompt();
-    const { outcome } = await deferredInstallPrompt.userChoice;
-    if (outcome === 'accepted') deferredInstallPrompt = null;
-    hideInstallBanner();
+    const isIOS = /iphone|ipad|ipod/i.test(navigator.userAgent);
+    const isHttpsButUntrusted = location.protocol === 'https:' && !window.isSecureContext;
+    if (isHttpsButUntrusted) {
+      showToast('HTTPS is active, but this certificate is not trusted on this device. Trust the cert and reload.', { duration: 4800 });
+      return;
+    }
+    if (!window.isSecureContext) {
+      showToast('Install requires HTTPS (or localhost). Open CliDeck in a secure context and reload.', { duration: 4200 });
+      return;
+    }
+    if (!('serviceWorker' in navigator)) {
+      showToast('This browser does not support Service Workers, so app install is unavailable.', { duration: 4200 });
+      return;
+    }
+    if (pwaInstallState.swRegistrationError) {
+      showToast('Install is blocked because Service Worker registration failed. Check certificate trust and reload.', { duration: 4800 });
+      return;
+    }
+    if (isIOS) {
+      showToast('Use Share -> Add to Home Screen to install CliDeck.', { duration: 4200 });
+      return;
+    }
+
+    showToast('Install prompt is unavailable in this browser. Use browser menu: Install app/Add to Home Screen.', { duration: 4600 });
   });
 
-  document.getElementById('pwa-dismiss-btn').addEventListener('click', () => {
-    hideInstallBanner();
-    // Remember dismissal for this session
-    sessionStorage.setItem('pwa-banner-dismissed', '1');
-  });
-}
-
-function hideInstallBanner() {
-  document.getElementById('pwa-install-banner')?.remove();
+  if (typeof displayModeQuery.addEventListener === 'function') {
+    displayModeQuery.addEventListener('change', syncInstallButton);
+  } else if (typeof displayModeQuery.addListener === 'function') {
+    displayModeQuery.addListener(syncInstallButton);
+  }
+  syncInstallButton();
 }
 
 function setAuthError(message = '') {
@@ -235,8 +270,11 @@ function connect() {
     state.terms.clear();
     document.getElementById('session-list').innerHTML = '';
     state.active = null;
+    state.layout.panes = [null, null];
+    state.layout.focusedPane = 0;
     document.getElementById('empty').style.display = 'flex';
     send({ type: 'remote.status' });
+    syncSplitToggleButton();
   };
 
   state.ws.onmessage = ({ data }) => {
@@ -276,9 +314,11 @@ function connect() {
         break;
       case 'output': {
         const entry = state.terms.get(msg.id);
-        if (entry && !entry.queue(msg.data)) entry.term.write(msg.data);
-        updatePreview(msg.id);
-        markUnread(msg.id);
+        if (entry) {
+          writeOutput(msg.id, msg.data);
+          updatePreview(msg.id);
+          markUnread(msg.id);
+        }
         break;
       }
       case 'closed':
@@ -473,15 +513,55 @@ function connect() {
 
 const mobileSidebarQuery = window.matchMedia('(max-width: 960px)');
 const mobileKeybarToggle = document.getElementById('mobile-keybar-toggle');
+const mobileRefreshButton = document.getElementById('mobile-refresh-btn');
 const mobileKeybar = document.getElementById('mobile-keybar');
 const mobileSelectToggle = document.getElementById('mobile-select-toggle');
+const splitToggleButton = document.getElementById('split-toggle');
+const mobileTopNav = document.getElementById('mobile-top-nav');
 const MOBILE_KEYBOARD_THRESHOLD = 90;
+const PULL_REFRESH_START_ZONE_RATIO = 0.25;
+const PULL_REFRESH_TRIGGER_PX = 72;
 const DIRECT_SEQUENCES = {
   'ctrl+c': '\x03',
   'ctrl+d': '\x04',
   'ctrl+l': '\x0c',
   'shift+tab': '\x1b[Z',
 };
+const pullRefreshState = {
+  tracking: false,
+  armed: false,
+  startY: 0,
+};
+
+function triggerFullRefresh() {
+  const url = new URL(window.location.href);
+  url.searchParams.set('_reload', String(Date.now()));
+  window.location.replace(url.toString());
+}
+
+function resetPullRefreshState() {
+  pullRefreshState.tracking = false;
+  pullRefreshState.startY = 0;
+  pullRefreshState.armed = false;
+  mobileRefreshButton?.classList.remove('pull-armed');
+}
+
+function canStartPullRefresh(event) {
+  if (!mobileSidebarQuery.matches) return false;
+  if (document.body.classList.contains('auth-pending') || document.body.classList.contains('auth-required')) return false;
+  if (document.body.classList.contains('mobile-nav-open')) return false;
+  if (document.body.classList.contains('mobile-selection-mode')) return false;
+  if (!document.getElementById('settings-overlay')?.classList.contains('hidden')) return false;
+  if (document.getElementById('session-creator') || document.getElementById('project-creator')) return false;
+  if (!mobileTopNav || !mobileTopNav.contains(event.target)) return false;
+  if (event.target?.closest?.('button, a, input, textarea, select, [role="button"]')) return false;
+
+  const touch = event.touches?.[0];
+  if (!touch) return false;
+  if (event.touches.length !== 1) return false;
+  if (touch.clientY > window.innerHeight * PULL_REFRESH_START_ZONE_RATIO) return false;
+  return true;
+}
 
 function closeMobileSidebar() {
   document.body.classList.remove('mobile-nav-open');
@@ -504,16 +584,26 @@ function setMobileSelectionMode(enabled) {
   syncSelectionButton();
 }
 
+function syncSplitToggleButton() {
+  if (!splitToggleButton) return;
+  const splitMode = state.layout.mode === 'split';
+  splitToggleButton.dataset.mode = splitMode ? 'split' : 'single';
+  splitToggleButton.textContent = splitMode ? 'Single View' : 'Split View';
+  splitToggleButton.setAttribute('aria-pressed', String(splitMode));
+}
+
+function setWorkspaceLayout(mode) {
+  setLayoutMode(mode);
+  syncSplitToggleButton();
+}
+
+function toggleSplitLayout() {
+  if (mobileSidebarQuery.matches) return;
+  setWorkspaceLayout(state.layout.mode === 'split' ? 'single' : 'split');
+}
+
 function refreshActiveTerminalViewport({ scrollBottom = false } = {}) {
-  const entry = state.terms.get(state.active);
-  if (!entry) return;
-  try {
-    entry.fit?.fit();
-    if (entry.term?.cols && entry.term?.rows) {
-      send({ type: 'resize', id: state.active, cols: entry.term.cols, rows: entry.term.rows });
-    }
-    if (scrollBottom) entry.term.scrollToBottom();
-  } catch {}
+  fitVisibleTerminals({ scrollBottom, activeOnly: true });
 }
 
 function getMobileKeyboardInset() {
@@ -537,7 +627,7 @@ function syncMobileKeyboardViewport() {
   if (keyboardOpen) {
     setMobileKeybarOpen(false);
     setMobileSelectionMode(false);
-    refreshActiveTerminalViewport({ scrollBottom: true });
+    refreshActiveTerminalViewport();
   }
 }
 
@@ -637,6 +727,7 @@ function handleMobileKeybarPress(button) {
 document.getElementById('mobile-nav-toggle').addEventListener('click', () => toggleMobileSidebar());
 document.getElementById('mobile-nav-close').addEventListener('click', closeMobileSidebar);
 document.getElementById('mobile-sidebar-backdrop').addEventListener('click', closeMobileSidebar);
+mobileRefreshButton?.addEventListener('click', triggerFullRefresh);
 mobileKeybarToggle?.addEventListener('click', () => setMobileKeybarOpen(!state.mobileKeybar.open));
 mobileSelectToggle?.addEventListener('click', () => {
   setMobileSelectionMode(!state.mobileKeybar.selectionMode);
@@ -645,17 +736,58 @@ mobileSelectToggle?.addEventListener('click', () => {
 mobileKeybar?.addEventListener('click', (event) => {
   handleMobileKeybarPress(event.target.closest('.mobile-key-btn'));
 });
+splitToggleButton?.addEventListener('click', toggleSplitLayout);
 document.addEventListener('clideck:panel-switched', () => {
   if (mobileSidebarQuery.matches) closeMobileSidebar();
 });
+document.addEventListener('touchstart', (event) => {
+  if (!canStartPullRefresh(event)) {
+    resetPullRefreshState();
+    return;
+  }
+  pullRefreshState.tracking = true;
+  pullRefreshState.startY = event.touches[0].clientY;
+  pullRefreshState.armed = false;
+  mobileRefreshButton?.classList.remove('pull-armed');
+}, { passive: true });
+document.addEventListener('touchmove', (event) => {
+  if (!pullRefreshState.tracking) return;
+  const touch = event.touches?.[0];
+  if (!touch) return;
+  const delta = touch.clientY - pullRefreshState.startY;
+  if (delta <= 0) {
+    if (pullRefreshState.armed) {
+      pullRefreshState.armed = false;
+      mobileRefreshButton?.classList.remove('pull-armed');
+    }
+    return;
+  }
+
+  const armed = delta >= PULL_REFRESH_TRIGGER_PX;
+  if (armed !== pullRefreshState.armed) {
+    pullRefreshState.armed = armed;
+    mobileRefreshButton?.classList.toggle('pull-armed', armed);
+  }
+}, { passive: true });
+document.addEventListener('touchend', () => {
+  if (!pullRefreshState.tracking) return;
+  const shouldRefresh = pullRefreshState.armed;
+  resetPullRefreshState();
+  if (shouldRefresh) triggerFullRefresh();
+}, { passive: true });
+document.addEventListener('touchcancel', resetPullRefreshState, { passive: true });
 mobileSidebarQuery.addEventListener('change', (e) => {
   if (!e.matches) {
+    resetPullRefreshState();
     closeMobileSidebar();
     setMobileKeybarOpen(false);
     setMobileSelectionMode(false);
     document.documentElement.style.setProperty('--mobile-kb-offset', '0px');
     document.body.classList.remove('mobile-keyboard-open');
+    syncSplitToggleButton();
+    fitVisibleTerminals({ force: true });
   } else {
+    setWorkspaceLayout('single');
     syncMobileKeyboardViewport();
   }
 });
@@ -663,7 +795,7 @@ if (window.visualViewport) {
   window.visualViewport.addEventListener('resize', syncMobileKeyboardViewport);
   window.visualViewport.addEventListener('scroll', syncMobileKeyboardViewport);
 }
-window.addEventListener('resize', syncMobileKeyboardViewport);
+window.addEventListener('resize', () => requestAnimationFrame(syncMobileKeyboardViewport));
 document.addEventListener('focusin', (event) => {
   if (!mobileSidebarQuery.matches) return;
   const isTerminalInput = event.target?.classList?.contains('xterm-helper-textarea');
@@ -672,7 +804,7 @@ document.addEventListener('focusin', (event) => {
   setMobileKeybarOpen(false);
   setTimeout(() => {
     syncMobileKeyboardViewport();
-    refreshActiveTerminalViewport({ scrollBottom: true });
+    refreshActiveTerminalViewport();
   }, 20);
 });
 document.addEventListener('focusout', () => {
@@ -719,6 +851,10 @@ sessionList.addEventListener('click', (e) => {
 
   const item = e.target.closest('.group');
   if (!item) return;
+
+  if (state.layout.mode === 'split' && mobileSidebarQuery.matches) {
+    setWorkspaceLayout('single');
+  }
 
   // Menu button
   if (e.target.closest('.menu-btn')) {
@@ -816,7 +952,7 @@ function showTelemetrySetup(commandId, sessionId) {
   toast.dataset.setupPreset = preset.presetId;
   toast.dataset.sessionId = sessionId;
   toast.dataset.commandId = commandId;
-  toast.className = 'fixed bottom-5 right-5 z-[500] w-[360px] bg-slate-800/95 backdrop-blur-sm border border-slate-700/60 rounded-xl shadow-2xl shadow-black/60';
+  toast.className = 'fixed bottom-5 left-4 right-4 sm:left-auto sm:right-5 sm:w-auto z-[500] w-full max-w-[360px] bg-slate-800/95 backdrop-blur-sm border border-slate-700/60 rounded-xl shadow-2xl shadow-black/60';
   toast.style.opacity = '0';
   toast.style.transform = 'translateY(12px)';
   toast.style.transition = 'opacity 0.3s ease, transform 0.3s ease';
@@ -1647,6 +1783,7 @@ async function boot() {
   syncSelectionButton();
   setMobileSelectionMode(false);
   syncMobileKeyboardViewport();
+  syncSplitToggleButton();
   initDrag();
   initSessionScrollbarVisibility();
 

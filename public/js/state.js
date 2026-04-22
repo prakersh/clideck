@@ -3,6 +3,11 @@ export const state = {
   authRefreshTimer: null,
   terms: new Map(),
   active: null,
+  layout: {
+    mode: 'single',
+    panes: [null, null],
+    focusedPane: 0,
+  },
   cfg: { commands: [], defaultPath: '', defaultTheme: 'catppuccin-mocha' },
   themes: [],
   presets: [],
@@ -17,6 +22,15 @@ export const state = {
     loggingOut: false,
   },
   remoteVersion: null,
+  mobileKeybar: {
+    open: false,
+    selectionMode: false,
+    modifiers: {
+      ctrl: false,
+      alt: false,
+      shift: false,
+    },
+  },
 };
 
 export function send(msg) {

@@ -10,13 +10,17 @@ export function wasDragging() {
 }
 
 const DRAG_THRESHOLD = 5;
+const mobileQuery = window.matchMedia('(max-width: 960px)');
 
 export function initDrag() {
   const list = document.getElementById('session-list');
 
   list.addEventListener('pointerdown', (e) => {
     if (e.button !== 0) return;
-    if (e.target.closest('.menu-btn') || e.target.closest('button')) return;
+    if (mobileQuery.matches) return;
+    if (e.pointerType && e.pointerType !== 'mouse') return;
+    const row = e.target.closest('.group[data-id]');
+    if (!row || e.target.closest('.menu-btn') || e.target.closest('button')) return;
 
     // Project drag — grab by the header
     const projHeader = e.target.closest('.project-header');

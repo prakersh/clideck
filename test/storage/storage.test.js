@@ -190,3 +190,32 @@ test('transcripts migrate from jsonl and hydrate cache from SQLite after restart
     await rm(home, { recursive: true, force: true });
   }
 });
+
+test('tilde paths expand for resolveValidDir and listDirs', async () => {
+  const home = await makeHome();
+  try {
+    await mkdir(join(home, 'projects'), { recursive: true });
+    await mkdir(join(home, 'workspace'), { recursive: true });
+
+    const result = await runNode(home, `
+      const { expandHomePath, resolveValidDir, listDirs } = require('./utils');
+      process.stdout.write('${RESULT_PREFIX}' + JSON.stringify({
+        expandedSlash: expandHomePath('~/projects'),
+        expandedBackslash: expandHomePath('~\\\\projects'),
+        resolved: resolveValidDir('~/projects'),
+        resolvedHome: resolveValidDir('~'),
+        dirsFromHome: listDirs('~/'),
+      }) + '\\n');
+    `);
+
+    assert.equal(result.expandedSlash, join(home, 'projects'));
+    assert.equal(result.expandedBackslash, join(home, 'projects'));
+    assert.equal(result.resolved, join(home, 'projects'));
+    assert.equal(result.resolvedHome, home);
+    assert.ok(Array.isArray(result.dirsFromHome));
+    assert.ok(result.dirsFromHome.includes('projects'));
+    assert.ok(result.dirsFromHome.includes('workspace'));
+  } finally {
+    await rm(home, { recursive: true, force: true });
+  }
+});

@@ -14,7 +14,7 @@ function getContainer() {
   if (c) return c;
   c = document.createElement('div');
   c.id = 'tmx-toasts';
-  c.className = 'fixed bottom-5 right-5 z-[500] flex flex-col gap-2.5';
+  c.className = 'fixed bottom-5 left-4 right-4 sm:left-auto sm:right-5 sm:w-auto z-[500] flex flex-col gap-2.5';
   document.body.appendChild(c);
   return c;
 }
@@ -31,7 +31,7 @@ export function showToast(message, opts = {}) {
 
   const el = document.createElement('div');
   if (id) el.id = `tmx-toast-${id}`;
-  el.className = 'w-[360px] bg-slate-800/95 backdrop-blur-sm border border-slate-700/60 rounded-xl tmx-toast';
+  el.className = 'w-full max-w-[360px] bg-slate-800/95 backdrop-blur-sm border border-slate-700/60 rounded-xl tmx-toast';
   el.style.cssText = 'opacity:0;transform:translateY(12px);transition:opacity 0.3s ease,transform 0.3s ease';
   el.innerHTML = `
     <div class="flex items-start gap-2.5 px-4 py-3.5">

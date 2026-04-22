@@ -59,20 +59,36 @@
     }
     #main {
       min-width: 0;
+      min-height: 0;
+    }
+    #workspace-controls {
+      position: absolute;
+      top: 10px;
+      left: 50%;
+      transform: translateX(-50%);
+      z-index: 40;
+      pointer-events: auto;
+    }
+    #split-toggle[data-mode="split"] {
+      border-color: color-mix(in srgb, #3b82f6 58%, transparent);
+      background: color-mix(in srgb, #1d4ed8 18%, var(--color-surface));
+      color: #dbeafe;
     }
     #mobile-nav-toggle,
     #mobile-nav-close,
     #mobile-sidebar-backdrop,
     #mobile-top-nav,
     #mobile-keybar,
-    #mobile-keybar-toggle {
+    #mobile-keybar-toggle,
+    #mobile-refresh-btn,
+    #mobile-install-btn {
       display: none;
     }
     #mobile-keybar {
       position: fixed;
       top: 0;
       right: 0;
-      z-index: 280;
+      z-index: 240;
       width: min(308px, calc(100vw - 20px));
       padding: 0.55rem;
       border: 1px solid color-mix(in srgb, var(--color-border) 72%, transparent);
@@ -266,12 +282,37 @@
     body.auth-required #mobile-keybar {
       display: none !important;
     }
+    #terminals,
+    .term-pane-slot,
+    .term-wrap {
+      min-width: 0;
+      min-height: 0;
+    }
+    #terminals {
+      overflow: hidden;
+    }
+    .term-pane-slot {
+      overflow: hidden;
+    }
+    #terminals .xterm .xterm-viewport {
+      overscroll-behavior: contain;
+    }
     @media (max-width: 960px) {
+      #workspace-controls {
+        display: none;
+      }
+      #terminals {
+        display: block !important;
+        padding: 0;
+      }
+      .term-pane-slot {
+        display: none !important;
+      }
       #mobile-top-nav {
         display: block;
         position: fixed;
         inset: 0 0 auto 0;
-        z-index: 230;
+        z-index: 220;
         padding: calc(10px + env(safe-area-inset-top)) 10px 10px;
         border-bottom: 1px solid color-mix(in srgb, var(--color-border) 64%, transparent);
         background:
@@ -300,7 +341,7 @@
         margin-top: 0.55rem;
       }
       .mobile-panel-tab {
-        min-height: 2.05rem;
+        min-height: 2.75rem;
         border-radius: 0.72rem;
         border: 1px solid color-mix(in srgb, var(--color-border) 62%, transparent);
         background: color-mix(in srgb, var(--color-raised) 70%, transparent);
@@ -313,7 +354,7 @@
         display: block;
         position: fixed;
         inset: 0;
-        z-index: 240;
+        z-index: 230;
         opacity: 0;
         pointer-events: none;
         background: color-mix(in srgb, var(--color-base) 78%, transparent);
@@ -323,9 +364,9 @@
       #sidebar-shell {
         position: fixed;
         inset: 0 auto 0 0;
-        z-index: 260;
-        width: 100vw;
-        max-width: 100vw;
+        z-index: 250;
+        width: 100%;
+        max-width: 100%;
         transform: translateX(calc(-100% - 16px));
         transition: transform 0.24s ease;
         box-shadow: 0 24px 60px rgba(0, 0, 0, 0.45);
@@ -339,7 +380,9 @@
       }
       #mobile-nav-toggle,
       #mobile-nav-close,
-      #mobile-keybar-toggle {
+      #mobile-keybar-toggle,
+      #mobile-refresh-btn,
+      #mobile-install-btn {
         display: inline-flex;
         align-items: center;
         justify-content: center;
@@ -360,7 +403,21 @@
         background: color-mix(in srgb, var(--color-surface) 92%, transparent);
         color: var(--color-text);
       }
-      #mobile-keybar-toggle {
+      #mobile-refresh-btn {
+        width: 36px;
+        height: 36px;
+        border-radius: 10px;
+        border: 1px solid color-mix(in srgb, var(--color-border) 72%, transparent);
+        background: color-mix(in srgb, var(--color-surface) 90%, transparent);
+        color: var(--color-text);
+      }
+      #mobile-refresh-btn.pull-armed {
+        border-color: color-mix(in srgb, var(--color-chat-active) 72%, transparent);
+        background: color-mix(in srgb, var(--color-chat-active) 62%, transparent);
+        color: #f8fafc;
+      }
+      #mobile-keybar-toggle,
+      #mobile-install-btn {
         min-width: 52px;
         height: 36px;
         border-radius: 10px;
@@ -375,11 +432,17 @@
         background: color-mix(in srgb, var(--color-chat-active) 62%, transparent);
         color: #f8fafc;
       }
+      #mobile-install-btn {
+        min-width: 62px;
+        border-color: color-mix(in srgb, var(--color-chat-active) 62%, transparent);
+        background: color-mix(in srgb, var(--color-chat-active) 26%, transparent);
+        color: color-mix(in srgb, var(--color-text) 92%, white 8%);
+      }
       #mobile-nav-close {
         position: absolute;
         top: max(12px, env(safe-area-inset-top));
         right: 12px;
-        z-index: 1;
+        z-index: 10;
         width: 36px;
         height: 36px;
         border-radius: 10px;
@@ -412,7 +475,7 @@
         display: block;
         top: calc(98px + env(safe-area-inset-top));
         right: 10px;
-        max-height: calc(100vh - (112px + env(safe-area-inset-top)));
+        max-height: calc(100dvh - (112px + env(safe-area-inset-top)));
         overflow: auto;
         -webkit-overflow-scrolling: touch;
       }
@@ -427,6 +490,34 @@
         overflow-y: auto !important;
         -webkit-overflow-scrolling: touch;
         touch-action: pan-y;
+      }
+      #session-list,
+      #prompts-list,
+      #plugins-list,
+      #settings-nav,
+      #settings-overlay,
+      #agent-list,
+      #creator-presets,
+      #fp-listing,
+      .pa-list {
+        -webkit-overflow-scrolling: touch;
+        touch-action: pan-y;
+        overscroll-behavior: contain;
+      }
+      #settings-overlay {
+        overscroll-behavior-y: contain;
+      }
+      #session-creator {
+        display: flex;
+        flex-direction: column;
+        max-height: min(62dvh, 580px);
+        overflow-y: auto;
+        -webkit-overflow-scrolling: touch;
+      }
+      #creator-presets {
+        min-height: 0;
+        overflow-y: auto;
+        padding-right: 2px;
       }
       #empty img {
         width: 9rem;
@@ -445,6 +536,23 @@
       #folder-picker > div {
         width: 100%;
         max-width: 420px;
+      }
+    }
+    /* dvh body height override for mobile address bar */
+    body { height: 100dvh; }
+    /* Scroll-locking behind modals */
+    #confirm-close,
+    #folder-picker {
+      overscroll-behavior: contain;
+    }
+    body.mobile-nav-open { overflow: hidden; }
+    /* Small-phone breakpoint */
+    @media (max-width: 480px) {
+      #mobile-keybar {
+        width: min(280px, calc(100% - 16px));
+      }
+      .mobile-panel-tab {
+        font-size: 0.65rem;
       }
     }
   </style>
@@ -597,7 +705,11 @@
           <svg class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path d="M4 7h16M4 12h16M4 17h16"/></svg>
         </button>
         <span id="mobile-panel-title">Sessions</span>
+        <button id="mobile-refresh-btn" type="button" aria-label="Reload CliDeck" title="Reload">
+          <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path d="M20 11a8 8 0 1 0 2.2 5.5"/><path d="M20 4v7h-7"/></svg>
+        </button>
         <button id="mobile-keybar-toggle" type="button" aria-label="Toggle terminal keys">Keys</button>
+        <button id="mobile-install-btn" type="button" aria-label="Install CliDeck" hidden>Install</button>
       </div>
       <div id="mobile-panel-tabs">
         <button class="mobile-panel-tab bg-slate-700/80 text-slate-100" data-panel="chats" type="button">Chats</button>
@@ -606,7 +718,20 @@
         <button class="mobile-panel-tab text-slate-400" data-panel="settings" type="button">Settings</button>
       </div>
     </div>
-    <div id="terminals" class="absolute inset-0" style="pointer-events:none"></div>
+    <div id="workspace-controls" class="flex items-center gap-2">
+      <button id="split-toggle" type="button" data-mode="single" class="h-8 px-3 rounded-md border border-slate-600 bg-slate-800/80 text-slate-300 text-[11px] font-semibold tracking-wide uppercase hover:bg-slate-700 transition-colors" title="Toggle split view">
+        Split View
+      </button>
+    </div>
+    <div id="terminals" class="absolute inset-0" style="pointer-events:none">
+      <div class="term-pane-slot focused" data-pane="0">
+        <div class="term-pane-empty">Select a session</div>
+      </div>
+      <div class="term-pane-slot" data-pane="1">
+        <div class="term-pane-empty">Select a session for this pane</div>
+      </div>
+    </div>
+
     <div id="plugin-toolbar" class="absolute top-2 right-3 z-10 flex gap-1.5 empty:hidden"></div>
     <div id="empty" class="absolute inset-0 flex flex-col items-center justify-center select-none">
       <img src="/img/clideck-logo-terminal-panel.png" alt="CliDeck" class="w-44 opacity-60 mb-5" draggable="false">
@@ -805,7 +930,7 @@
     </div>
 
     <!-- Confirmation dialog -->
-    <div id="confirm-close" class="absolute inset-0 z-[250] bg-black/60 backdrop-blur-sm hidden items-center justify-center">
+    <div id="confirm-close" class="absolute inset-0 z-[300] bg-black/60 backdrop-blur-sm hidden items-center justify-center">
       <div class="bg-slate-800 border border-slate-600 rounded-xl shadow-2xl shadow-black/50 w-80 flex flex-col">
         <div id="cc-message" class="px-5 py-4 text-sm">Close this session? The terminal process will be killed.</div>
         <div class="px-4 py-3 border-t border-slate-700 flex justify-end gap-2">
@@ -816,8 +941,8 @@
     </div>
 
     <!-- Folder picker -->
-    <div id="folder-picker" class="absolute inset-0 z-[300] bg-black/60 backdrop-blur-sm hidden items-center justify-center">
-      <div class="bg-slate-800 border border-slate-600 rounded-xl shadow-2xl shadow-black/50 w-[420px] max-h-[460px] flex flex-col">
+    <div id="folder-picker" class="absolute inset-0 z-[320] bg-black/60 backdrop-blur-sm hidden items-center justify-center">
+      <div class="bg-slate-800 border border-slate-600 rounded-xl shadow-2xl shadow-black/50 w-full max-w-[420px] max-h-[460px] flex flex-col">
         <div class="px-4 py-3 border-b border-slate-700 text-sm font-semibold">Choose Directory</div>
         <div id="fp-path" class="px-4 py-2 text-xs text-slate-400 border-b border-slate-700 break-all"></div>
         <div id="fp-listing" class="flex-1 overflow-y-auto py-1 min-h-[200px]"></div>

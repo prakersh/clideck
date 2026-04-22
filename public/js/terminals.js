@@ -118,7 +118,9 @@ function positionMenu(menu, anchorRect) {
   document.body.appendChild(menu);
   const mh = menu.offsetHeight;
   const gap = 4;
-  const spaceBelow = window.innerHeight - anchorRect.bottom - gap;
+  const vh = window.visualViewport?.height ?? window.innerHeight;
+  const vTop = window.visualViewport?.offsetTop ?? 0;
+  const spaceBelow = (vh + vTop) - anchorRect.bottom - gap;
   menu.style.top = (spaceBelow >= mh
     ? anchorRect.bottom + gap
     : Math.max(gap, anchorRect.top - gap - mh)) + 'px';
@@ -235,7 +237,10 @@ function openThemePicker(sessionId, anchorEl) {
 
   const rect = anchorEl.getBoundingClientRect();
   const picker = document.createElement('div');
-  picker.className = 'fixed z-[400] min-w-[220px] max-h-[400px] overflow-y-auto bg-slate-800 border border-slate-600 rounded-lg shadow-xl shadow-black/40 py-1';
+  const vpH = window.visualViewport?.height ?? window.innerHeight;
+  const maxH = Math.min(400, vpH - 80);
+  picker.className = 'fixed z-[400] min-w-[220px] overflow-y-auto bg-slate-800 border border-slate-600 rounded-lg shadow-xl shadow-black/40 py-1';
+  picker.style.maxHeight = maxH + 'px';
   picker.style.top = (rect.bottom + 4) + 'px';
   picker.style.left = rect.left + 'px';
 
@@ -273,18 +278,249 @@ function closeThemePicker() {
   if (pickerCleanup) pickerCleanup();
 }
 
+// --- Terminal layout helpers ---
+
+const MIN_VISIBLE_SIZE = 2;
+const FOLLOW_BOTTOM_THRESHOLD = 2;
+
+function getTerminalsRoot() {
+  return document.getElementById('terminals');
+}
+
+function getPaneSlot(index) {
+  return document.querySelector(`.term-pane-slot[data-pane="${index}"]`);
+}
+
+function isNearBottom(term, threshold = FOLLOW_BOTTOM_THRESHOLD) {
+  const buf = term?.buffer?.active;
+  if (!buf || !term?.rows) return true;
+  return (buf.baseY + term.rows - buf.viewportY) <= threshold;
+}
+
+function visibleSessionMap() {
+  const visible = new Map();
+  if (state.layout.mode === 'split') {
+    for (let pane = 0; pane < 2; pane++) {
+      const id = state.layout.panes[pane];
+      if (id && state.terms.has(id)) visible.set(id, pane);
+    }
+    return visible;
+  }
+  if (state.active && state.terms.has(state.active)) visible.set(state.active, 0);
+  return visible;
+}
+
+function isSessionVisible(id) {
+  return visibleSessionMap().has(id);
+}
+
+function clearUnread(id) {
+  const entry = state.terms.get(id);
+  if (!entry?.unread) return;
+  entry.unread = false;
+  const dot = document.querySelector(`.group[data-id="${id}"] .unread-dot`);
+  if (dot) dot.classList.add('hidden');
+  updateUnreadBadge();
+  if (state.filter.tab === 'unread') setTab('all');
+}
+
+function syncActiveSessionRow() {
+  document.querySelector('.group.active-session')?.classList.remove('active-session');
+  if (!state.active) return;
+  document.querySelector(`.group[data-id="${state.active}"]`)?.classList.add('active-session');
+}
+
+function normalizeLayoutState() {
+  if (!Array.isArray(state.layout.panes) || state.layout.panes.length !== 2) {
+    state.layout.panes = [null, null];
+  }
+  if (state.layout.focusedPane !== 0 && state.layout.focusedPane !== 1) {
+    state.layout.focusedPane = 0;
+  }
+
+  for (let pane = 0; pane < 2; pane++) {
+    const id = state.layout.panes[pane];
+    if (id && !state.terms.has(id)) state.layout.panes[pane] = null;
+  }
+
+  if (state.layout.panes[0] && state.layout.panes[0] === state.layout.panes[1]) {
+    state.layout.panes[1] = null;
+  }
+
+  if (state.layout.mode === 'split') {
+    const assigned = new Set(state.layout.panes.filter(Boolean));
+    const unassigned = [...state.terms.keys()].filter((id) => !assigned.has(id));
+    for (let pane = 0; pane < 2; pane++) {
+      if (!state.layout.panes[pane] && unassigned.length) {
+        state.layout.panes[pane] = unassigned.shift();
+      }
+    }
+    if (!state.layout.panes[state.layout.focusedPane] && state.layout.panes[1 - state.layout.focusedPane]) {
+      state.layout.focusedPane = 1 - state.layout.focusedPane;
+    }
+    state.active = state.layout.panes[state.layout.focusedPane] || state.layout.panes[1 - state.layout.focusedPane] || null;
+    return;
+  }
+
+  if (state.active && !state.terms.has(state.active)) state.active = null;
+  if (!state.active) state.active = state.terms.keys().next().value || null;
+  state.layout.panes[0] = state.active || null;
+  state.layout.panes[1] = null;
+}
+
+let paneEventsBound = false;
+function bindPaneEvents() {
+  if (paneEventsBound) return;
+  paneEventsBound = true;
+  for (let pane = 0; pane < 2; pane++) {
+    const slot = getPaneSlot(pane);
+    if (!slot) continue;
+    slot.addEventListener('pointerdown', () => {
+      if (state.layout.mode !== 'split') return;
+      if (state.layout.focusedPane === pane && state.active === state.layout.panes[pane]) return;
+      setFocusedPane(pane, { focusTerminal: false });
+    });
+  }
+}
+
+function applyTerminalLayout({ focusTerminal = false } = {}) {
+  bindPaneEvents();
+  normalizeLayoutState();
+
+  const root = getTerminalsRoot();
+  const pane0 = getPaneSlot(0);
+  const pane1 = getPaneSlot(1);
+  const panes = [pane0, pane1];
+  const visible = visibleSessionMap();
+
+  if (root) {
+    root.dataset.layout = state.layout.mode;
+    root.style.pointerEvents = state.terms.size ? '' : 'none';
+  }
+  document.getElementById('empty').style.display = state.terms.size ? 'none' : 'flex';
+
+  for (let pane = 0; pane < panes.length; pane++) {
+    const slot = panes[pane];
+    if (!slot) continue;
+    const id = state.layout.mode === 'split'
+      ? state.layout.panes[pane]
+      : (pane === 0 ? state.active : null);
+    slot.classList.toggle('focused', state.layout.mode === 'split' && state.layout.focusedPane === pane);
+    slot.classList.toggle('has-session', !!(id && state.terms.has(id)));
+    const empty = slot.querySelector('.term-pane-empty');
+    if (empty) empty.style.display = (id && state.terms.has(id)) ? 'none' : '';
+  }
+
+  for (const [id, entry] of state.terms) {
+    const pane = visible.get(id);
+    const target = pane == null ? root : panes[pane] || root;
+    if (target && entry.el.parentElement !== target) target.appendChild(entry.el);
+    entry.el.classList.toggle('active', pane != null);
+    if (pane == null) entry.el.removeAttribute('data-pane');
+    else entry.el.dataset.pane = String(pane);
+  }
+
+  syncActiveSessionRow();
+
+  for (const id of visible.keys()) {
+    state.terms.get(id)?.scheduleFit?.();
+  }
+
+  if (focusTerminal && state.active && !document.querySelector('[contenteditable="true"]')) {
+    state.terms.get(state.active)?.term?.focus();
+  }
+}
+
+function assignSessionToPane(id, pane) {
+  if (pane !== 0 && pane !== 1) return;
+  if (id && !state.terms.has(id)) return;
+  const other = pane === 0 ? 1 : 0;
+  if (id && state.layout.panes[other] === id) {
+    state.layout.panes[other] = state.layout.panes[pane] || null;
+  }
+  state.layout.panes[pane] = id || null;
+}
+
+export function setFocusedPane(pane, { focusTerminal = true } = {}) {
+  if (state.layout.mode !== 'split') return;
+  if (pane !== 0 && pane !== 1) return;
+  state.layout.focusedPane = pane;
+  state.active = state.layout.panes[pane] || state.layout.panes[1 - pane] || null;
+  if (state.active) clearUnread(state.active);
+  applyTerminalLayout({ focusTerminal });
+}
+
+export function setLayoutMode(mode) {
+  const nextMode = mode === 'split' ? 'split' : 'single';
+  if (nextMode === state.layout.mode) return;
+
+  if (nextMode === 'split') {
+    const current = state.active && state.terms.has(state.active)
+      ? state.active
+      : state.terms.keys().next().value || null;
+    state.layout.mode = 'split';
+    state.layout.panes = [current, null];
+    state.layout.focusedPane = 0;
+    const candidates = [...state.terms.keys()].filter((id) => id !== current);
+    if (candidates.length) state.layout.panes[1] = candidates[0];
+    state.active = state.layout.panes[0] || state.layout.panes[1] || null;
+  } else {
+    const keep = state.layout.panes[state.layout.focusedPane]
+      || state.layout.panes[1 - state.layout.focusedPane]
+      || state.active
+      || state.terms.keys().next().value
+      || null;
+    state.layout.mode = 'single';
+    state.layout.panes = [keep, null];
+    state.layout.focusedPane = 0;
+    state.active = keep;
+  }
+
+  if (state.active) clearUnread(state.active);
+  applyTerminalLayout({ focusTerminal: true });
+}
+
+export function fitVisibleTerminals({ scrollBottom = false, force = false, activeOnly = false } = {}) {
+  const targets = activeOnly && state.active
+    ? [state.active]
+    : [...visibleSessionMap().keys()];
+  for (const id of targets) {
+    const entry = state.terms.get(id);
+    if (!entry) continue;
+    entry.scheduleFit?.({ force, scrollBottom });
+  }
+}
+
+export function writeOutput(id, data) {
+  const entry = state.terms.get(id);
+  if (!entry) return;
+  const shouldFollow = isSessionVisible(id) && isNearBottom(entry.term);
+  if (entry.queue(data)) return;
+  if (!shouldFollow) {
+    entry.term.write(data);
+    return;
+  }
+  entry.term.write(data, () => {
+    if (isSessionVisible(id)) entry.term.scrollToBottom();
+  });
+}
+
 // --- Terminal size estimation (for PTY spawn) ---
 
 export function estimateSize() {
-  const el = document.getElementById('terminals');
+  const root = getTerminalsRoot();
+  const pane = state.layout.mode === 'split'
+    ? getPaneSlot(state.layout.focusedPane)
+    : getPaneSlot(0);
+  const target = pane || root;
   // Account for inset-1 padding (4px each side)
-  const w = el.clientWidth - 8, h = el.clientHeight - 8;
+  const w = (target?.clientWidth || root.clientWidth) - 8;
+  const h = (target?.clientHeight || root.clientHeight) - 8;
   // Menlo 13px: ~7.8px wide, ~17px tall
   return { cols: Math.max(Math.floor(w / 7.8), 80), rows: Math.max(Math.floor(h / 17), 24) };
 }
 
 // --- Terminal management ---
-
 export function addTerminal(id, name, themeId, commandId, projectId, muted, lastPreview) {
   if (state.terms.has(id)) return;
   themeId = themeId || state.cfg.defaultTheme || 'default';
@@ -323,7 +559,7 @@ export function addTerminal(id, name, themeId, commandId, projectId, muted, last
   const el = document.createElement('div');
   el.className = 'term-wrap';
   el.style.backgroundColor = resolveTheme(themeId).background;
-  document.getElementById('terminals').appendChild(el);
+  getTerminalsRoot().appendChild(el);
 
   const term = new Terminal({
     fontSize: 13,
@@ -366,40 +602,107 @@ export function addTerminal(id, name, themeId, commandId, projectId, muted, last
 
   term.open(el);
   attachToTerminal(term);
-  let fitted = false, pending = [];
-  // [FIT-GUARD] only call fit() when proposed dimensions actually change — prevents
-  // unnecessary buffer reflows that cause scrollbar jumpiness on sub-pixel layout shifts
+
+  let fitted = false;
+  let pending = [];
   let fitRaf = 0;
-  function doFit() {
-    const dims = fit.proposeDimensions();
-    if (!dims || (dims.cols === term.cols && dims.rows === term.rows)) return;
-    fit.fit();
-    send({ type: 'resize', id, cols: term.cols, rows: term.rows });
-  }
+  let lastSize = { width: 0, height: 0, cols: 0, rows: 0 };
+
+  const flushPending = () => {
+    if (fitted) return;
+    fitted = true;
+    for (const chunk of pending) term.write(chunk);
+    pending = null;
+    updatePreview(id);
+  };
+
+  const scheduleFit = ({ force = false, scrollBottom = false } = {}) => {
+    if (!state.terms.has(id)) return;
+    if (!force && !isSessionVisible(id)) return;
+    if (fitRaf) cancelAnimationFrame(fitRaf);
+    fitRaf = requestAnimationFrame(() => {
+      fitRaf = 0;
+      if (!state.terms.has(id)) return;
+      if (!force && !isSessionVisible(id)) return;
+      const width = el.clientWidth;
+      const height = el.clientHeight;
+      if (width < MIN_VISIBLE_SIZE || height < MIN_VISIBLE_SIZE) return;
+
+      const nearBottomBefore = isNearBottom(term);
+      const sameSize = !force && width === lastSize.width && height === lastSize.height;
+
+      if (!sameSize) {
+        fit.fit();
+        const changed = term.cols !== lastSize.cols || term.rows !== lastSize.rows;
+        lastSize = { width, height, cols: term.cols, rows: term.rows };
+        if (changed && term.cols && term.rows) {
+          send({ type: 'resize', id, cols: term.cols, rows: term.rows });
+        }
+      }
+
+      flushPending();
+
+      if (scrollBottom || nearBottomBefore) {
+        term.scrollToBottom();
+      }
+    });
+  };
+
   const ro = new ResizeObserver(() => {
-    if (!el.offsetWidth) return;
-    if (!fitted) {
-      fitted = true;
-      fit.fit();
-      send({ type: 'resize', id, cols: term.cols, rows: term.rows });
-      for (const chunk of pending) term.write(chunk);
-      pending = null;
-      updatePreview(id);
-      return;
-    }
-    if (fitRaf) return;
-    fitRaf = requestAnimationFrame(() => { fitRaf = 0; doFit(); });
+    scheduleFit();
   });
   ro.observe(el);
+
   // Safety: if RO hasn't fired within 500ms, flush anyway to avoid unbounded queue
-  setTimeout(() => { if (!fitted) { fitted = true; for (const chunk of pending) term.write(chunk); pending = null; updatePreview(id); } }, 500);
-  const cancelFitRaf = () => { if (fitRaf) { cancelAnimationFrame(fitRaf); fitRaf = 0; } };
-  state.terms.set(id, { term, fit, el, ro, cancelFitRaf, themeId, commandId, projectId: projectId || null, muted: !!muted, working: false, workStartedAt: null, stopBounce, queue: (data) => { if (!fitted) { pending.push(data); return true; } return false; }, lastActivityAt: Date.now(), unread: false, lastPreviewText: lastPreview || '', searchText: '' });
-  document.getElementById('empty').style.display = 'none';
-  document.getElementById('terminals').style.pointerEvents = '';
+  setTimeout(flushPending, 500);
+
+  state.terms.set(id, {
+    term,
+    fit,
+    el,
+    ro,
+    scheduleFit,
+    cancelFit: () => {
+      if (!fitRaf) return;
+      cancelAnimationFrame(fitRaf);
+      fitRaf = 0;
+    },
+    themeId,
+    commandId,
+    projectId: projectId || null,
+    muted: !!muted,
+    working: !hasBridge,
+    workStartedAt: hasBridge ? null : Date.now(),
+    stopBounce,
+    queue: (data) => {
+      if (!fitted) {
+        pending.push(data);
+        return true;
+      }
+      return false;
+    },
+    lastActivityAt: Date.now(),
+    unread: false,
+    lastPreviewText: lastPreview || '',
+    searchText: '',
+  });
+
+  if (state.layout.mode === 'split') {
+    const left = state.layout.panes[0];
+    const right = state.layout.panes[1];
+    if (!left) assignSessionToPane(id, 0);
+    else if (!right && left !== id) assignSessionToPane(id, 1);
+    else if (state.layout.focusedPane === 0) assignSessionToPane(id, 0);
+    else assignSessionToPane(id, 1);
+    state.active = state.layout.panes[state.layout.focusedPane] || id;
+  } else {
+    state.active = id;
+  }
+
   if (muted) requestAnimationFrame(() => updateMuteIndicator(id));
 
   regroupSessions();
+  applyTerminalLayout({ focusTerminal: false });
 }
 
 export function removeTerminal(id) {
@@ -408,55 +711,62 @@ export function removeTerminal(id) {
   if (entry.stopBounce) entry.stopBounce();
   entry.cancelFitRaf?.();
   entry.ro?.disconnect();
+  entry.cancelFit?.();
   entry.term.dispose();
   entry.el.remove();
   state.terms.delete(id);
   document.querySelector(`.group[data-id="${id}"]`)?.remove();
 
-  if (state.active === id) {
-    const next = state.terms.keys().next().value;
-    if (next) select(next);
-    else {
-      state.active = null;
-      document.getElementById('empty').style.display = 'flex';
-      document.getElementById('terminals').style.pointerEvents = 'none';
-    }
+  for (let pane = 0; pane < 2; pane++) {
+    if (state.layout.panes[pane] === id) state.layout.panes[pane] = null;
   }
+
+  if (state.layout.mode === 'split') {
+    const remainingIds = [...state.terms.keys()];
+    const assigned = new Set(state.layout.panes.filter(Boolean));
+    const fill = remainingIds.find((sid) => !assigned.has(sid));
+    if (!state.layout.panes[0] && fill) assignSessionToPane(fill, 0);
+    const fillRight = remainingIds.find((sid) => !state.layout.panes.includes(sid));
+    if (!state.layout.panes[1] && fillRight) assignSessionToPane(fillRight, 1);
+    if (!state.layout.panes[state.layout.focusedPane] && state.layout.panes[1 - state.layout.focusedPane]) {
+      state.layout.focusedPane = 1 - state.layout.focusedPane;
+    }
+    state.active = state.layout.panes[state.layout.focusedPane] || state.layout.panes[1 - state.layout.focusedPane] || null;
+  } else if (state.active === id) {
+    state.active = state.terms.keys().next().value || null;
+    state.layout.panes[0] = state.active;
+  }
+
   regroupSessions();
+  applyTerminalLayout({ focusTerminal: false });
 }
 
-export function select(id) {
-  if (state.active === id) return;
+export function select(id, options = {}) {
+  if (!state.terms.has(id)) return;
+  const { focusTerminal = true, pane = null } = options;
   closeDropdown();
 
-  const prev = document.querySelector('.group.active-session');
-  if (prev) prev.classList.remove('active-session');
-  document.querySelector('.term-wrap.active')?.classList.remove('active');
-
-  const item = document.querySelector(`.group[data-id="${id}"]`);
-  if (item) item.classList.add('active-session');
-
-  const entry = state.terms.get(id);
-  if (entry) {
-    entry.el.classList.add('active');
-    if (entry.unread) {
-      entry.unread = false;
-      const dot = document.querySelector(`.group[data-id="${id}"] .unread-dot`);
-      if (dot) dot.classList.add('hidden');
-      updateUnreadBadge();
-      if (state.filter.tab === 'unread') setTab('all');
-    }
-    entry.term.scrollToBottom();
-    if (!document.querySelector('[contenteditable="true"]')) entry.term.focus();
+  if (state.layout.mode === 'split') {
+    const targetPane = pane ?? state.layout.focusedPane;
+    assignSessionToPane(id, targetPane);
+    state.layout.focusedPane = targetPane;
+    state.active = id;
+  } else {
+    state.active = id;
+    state.layout.panes[0] = id;
+    state.layout.panes[1] = null;
+    state.layout.focusedPane = 0;
   }
-  state.active = id;
+
+  clearUnread(id);
+  applyTerminalLayout({ focusTerminal });
 }
 
 // --- Preview & status ---
 
 export function markUnread(id) {
   const entry = state.terms.get(id);
-  if (!entry || id === state.active || entry.unread) return;
+  if (!entry || isSessionVisible(id) || entry.unread) return;
   entry.unread = true;
   const dot = document.querySelector(`.group[data-id="${id}"] .unread-dot`);
   if (dot) dot.classList.remove('hidden');

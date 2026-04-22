@@ -1,5 +1,6 @@
 const { chmodSync, statSync, readdirSync } = require('fs');
 const { dirname, join } = require('path');
+const { homedir } = require('os');
 
 function ensurePtyHelper() {
   if (process.platform === 'win32') return;
@@ -38,21 +39,32 @@ function parseCommand(str) {
 }
 
 function resolveValidDir(dir) {
+  const expanded = expandHomePath(dir);
   try {
-    if (dir && statSync(dir).isDirectory()) return dir;
+    if (expanded && statSync(expanded).isDirectory()) return expanded;
   } catch {}
-  return require('os').homedir();
+  return homedir();
 }
 
 function listDirs(path) {
+  const expanded = expandHomePath(path);
   try {
-    return readdirSync(path, { withFileTypes: true })
+    return readdirSync(expanded, { withFileTypes: true })
       .filter(d => d.isDirectory() && !d.name.startsWith('.'))
       .map(d => d.name)
       .sort();
   } catch (e) {
     return { error: e.message };
   }
+}
+
+function expandHomePath(input) {
+  if (typeof input !== 'string' || !input) return input;
+  if (input === '~') return homedir();
+  if (input.startsWith('~/') || input.startsWith('~\\')) {
+    return join(homedir(), input.slice(2));
+  }
+  return input;
 }
 
 const defaultShell = process.platform === 'win32' ? (process.env.COMSPEC || 'cmd.exe') : '/bin/zsh';
@@ -63,4 +75,4 @@ function binName(command) {
   return exec.split(/[\\/]/).pop().split(/\s/)[0].replace(/\.(exe|cmd)$/i, '');
 }
 
-module.exports = { ensurePtyHelper, parseCommand, resolveValidDir, listDirs, defaultShell, binName };
+module.exports = { ensurePtyHelper, parseCommand, resolveValidDir, listDirs, expandHomePath, defaultShell, binName };

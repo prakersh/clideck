@@ -1,4 +1,5 @@
 const http = require('http');
+const https = require('https');
 const { readFileSync, existsSync } = require('fs');
 const { join, extname, resolve } = require('path');
 const { WebSocketServer } = require('ws');
@@ -64,7 +65,17 @@ plugins.init(sessions.broadcast, sessions.getSessions, () => require('./handlers
 
 const HOST = process.env.CLIDECK_HOST || '127.0.0.1';
 const PORT = Number(process.env.CLIDECK_PORT || 4000);
-const MIME = { '.html': 'text/html', '.css': 'text/css', '.js': 'application/javascript', '.png': 'image/png', '.svg': 'image/svg+xml', '.mp3': 'audio/mpeg' };
+const TLS_CERT_PATH = process.env.CLIDECK_TLS_CERT_PATH || '';
+const TLS_KEY_PATH = process.env.CLIDECK_TLS_KEY_PATH || '';
+const MIME = {
+  '.html': 'text/html',
+  '.css': 'text/css',
+  '.js': 'application/javascript',
+  '.png': 'image/png',
+  '.svg': 'image/svg+xml',
+  '.mp3': 'audio/mpeg',
+  '.webmanifest': 'application/manifest+json',
+};
 const ALIASES = {
   '/xterm.css':    join(__dirname, 'node_modules/@xterm/xterm/css/xterm.css'),
   '/xterm.js':     join(__dirname, 'node_modules/@xterm/xterm/lib/xterm.js'),
@@ -154,6 +165,23 @@ function serveFile(res, filePath) {
   } catch {
     res.writeHead(500).end();
   }
+}
+
+function loadTlsOptions() {
+  if (!TLS_CERT_PATH && !TLS_KEY_PATH) return null;
+  if (!TLS_CERT_PATH || !TLS_KEY_PATH) {
+    throw new Error('Both CLIDECK_TLS_CERT_PATH and CLIDECK_TLS_KEY_PATH are required for HTTPS.');
+  }
+  if (!existsSync(TLS_CERT_PATH)) {
+    throw new Error(`TLS cert file not found: ${TLS_CERT_PATH}`);
+  }
+  if (!existsSync(TLS_KEY_PATH)) {
+    throw new Error(`TLS key file not found: ${TLS_KEY_PATH}`);
+  }
+  return {
+    cert: readFileSync(TLS_CERT_PATH),
+    key: readFileSync(TLS_KEY_PATH),
+  };
 }
 
 function readJsonBody(req, maxBytes) {
@@ -281,13 +309,22 @@ async function handleRequest(req, res) {
   serveFile(res, filePath);
 }
 
-const server = http.createServer((req, res) => {
-  handleRequest(req, res).catch((error) => {
-    console.error('[server] request failed:', error);
-    if (!res.headersSent) res.writeHead(500);
-    res.end();
+const tlsOptions = loadTlsOptions();
+const server = tlsOptions
+  ? https.createServer(tlsOptions, (req, res) => {
+    handleRequest(req, res).catch((error) => {
+      console.error('[server] request failed:', error);
+      if (!res.headersSent) res.writeHead(500);
+      res.end();
+    });
+  })
+  : http.createServer((req, res) => {
+    handleRequest(req, res).catch((error) => {
+      console.error('[server] request failed:', error);
+      if (!res.headersSent) res.writeHead(500);
+      res.end();
+    });
   });
-});
 
 const wss = new WebSocketServer({ noServer: true });
 wss.on('connection', onConnection);
@@ -329,7 +366,8 @@ process.on('SIGTERM', onShutdown);
 
 server.listen(PORT, HOST, () => {
   const v = require('./package.json').version;
-  const url = `http://localhost:${PORT}`;
+  const scheme = tlsOptions ? 'https' : 'http';
+  const url = `${scheme}://localhost:${PORT}`;
   console.log(`
 \x1b[38;5;105m  ╺━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━╸\x1b[0m
 

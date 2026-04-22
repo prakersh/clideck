@@ -1,4 +1,4 @@
-const CACHE_VERSION = 'clideck-static-v3';
+const CACHE_VERSION = 'clideck-static-v4';
 const STATIC_CACHE = `${CACHE_VERSION}-precache`;
 const RUNTIME_CACHE = `${CACHE_VERSION}-runtime`;
 

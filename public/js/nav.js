@@ -5,12 +5,39 @@ const ALL_PANELS = ['chats', 'prompts', 'plugins', 'settings'];
 const PANEL_TITLES = { chats: 'Sessions', prompts: 'Prompts', plugins: 'Plugins', settings: 'Settings' };
 const ACTIVE = ['text-slate-200', 'bg-slate-800'];
 const INACTIVE = ['text-slate-500', 'hover:text-slate-300', 'hover:bg-slate-800/50'];
+const mobileQuery = window.matchMedia('(max-width: 960px)');
+const mobilePanelTitle = document.getElementById('mobile-panel-title');
+const mobilePanelTabs = [...document.querySelectorAll('.mobile-panel-tab')];
+
+function emitPanelSwitch(panelId) {
+  document.dispatchEvent(new CustomEvent('clideck:panel-switched', {
+    detail: {
+      panelId,
+      title: PANEL_TITLES[panelId] || 'CliDeck',
+    },
+  }));
+}
+
+function closeMobileSidebarIfNeeded() {
+  if (!mobileQuery.matches) return;
+  document.body.classList.remove('mobile-nav-open');
+}
 
 function setRailActive(id) {
   document.querySelectorAll('#nav-rail .rail-btn').forEach(btn => {
     const match = (btn.dataset.panel === id) || (btn.id === 'rail-settings' && id === 'settings');
     ACTIVE.forEach(c => btn.classList.toggle(c, match));
     INACTIVE.forEach(c => btn.classList.toggle(c, !match));
+  });
+}
+
+function setMobilePanelActive(id) {
+  if (mobilePanelTitle) mobilePanelTitle.textContent = PANEL_TITLES[id] || 'CliDeck';
+  mobilePanelTabs.forEach(btn => {
+    const active = btn.dataset.panel === id;
+    btn.classList.toggle('text-slate-100', active);
+    btn.classList.toggle('text-slate-400', !active);
+    btn.classList.toggle('bg-slate-700/80', active);
   });
 }
 
@@ -28,6 +55,8 @@ function showSettings() {
   document.getElementById('settings-overlay').classList.remove('hidden');
   document.getElementById('btn-new').classList.add('opacity-30', 'pointer-events-none');
   setRailActive('settings');
+  setMobilePanelActive('settings');
+  emitPanelSwitch('settings');
   document.title = 'CliDeck — Settings';
 }
 
@@ -44,6 +73,8 @@ export function switchPanel(panelId) {
   const el = document.getElementById(`panel-${panelId}`);
   if (el) { el.classList.remove('hidden'); el.classList.add('flex'); }
   setRailActive(panelId);
+  setMobilePanelActive(panelId);
+  emitPanelSwitch(panelId);
   document.title = 'CliDeck — ' + (PANEL_TITLES[panelId] || 'CliDeck');
 }
 
@@ -53,4 +84,16 @@ document.getElementById('nav-rail').addEventListener('click', (e) => {
   closeDropdown();
   if (btn.id === 'rail-settings') showSettings();
   else if (btn.dataset.panel) switchPanel(btn.dataset.panel);
+  closeMobileSidebarIfNeeded();
 });
+
+document.getElementById('mobile-panel-tabs')?.addEventListener('click', (e) => {
+  const tab = e.target.closest('.mobile-panel-tab');
+  if (!tab) return;
+  closeDropdown();
+  if (tab.dataset.panel === 'settings') showSettings();
+  else switchPanel(tab.dataset.panel);
+  closeMobileSidebarIfNeeded();
+});
+
+setMobilePanelActive('chats');

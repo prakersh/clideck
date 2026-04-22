@@ -10,7 +10,11 @@ for (const preset of PRESETS) {
 
 const POSIX_ALIAS_FILES = [
   { shell: '/bin/zsh', source: '~/.zshrc', path: join(os.homedir(), '.zshrc') },
+  { shell: '/bin/zsh', source: '~/.zprofile', path: join(os.homedir(), '.zprofile') },
+  { shell: '/bin/zsh', source: '~/.zsh_aliases', path: join(os.homedir(), '.zsh_aliases') },
   { shell: '/bin/bash', source: '~/.bashrc', path: join(os.homedir(), '.bashrc') },
+  { shell: '/bin/bash', source: '~/.bash_profile', path: join(os.homedir(), '.bash_profile') },
+  { shell: '/bin/bash', source: '~/.bash_aliases', path: join(os.homedir(), '.bash_aliases') },
 ];
 const ALIAS_SKIP_TOKENS = new Set(['command', 'builtin', 'noglob', 'nocorrect']);
 const FUNCTION_SKIP_TOKENS = new Set(['if', 'then', 'fi', 'local', 'echo', 'return', 'export', '[', 'exec']);
@@ -274,12 +278,41 @@ function syncCommandWithPreset(cmd) {
 }
 
 function discoverAliasCommands(commands) {
-  const existing = new Set(commands.filter(cmd => cmd.enabled !== false).map((cmd) => {
-    const alias = getAliasInfo(cmd.command);
-    return alias?.name || (cmd.command || '').trim();
+  const aliases = getAliases().filter(alias => !!alias.presetId);
+  const currentAliasNames = new Set(aliases.map(alias => alias.name));
+
+  // Remove stale auto-detected aliases that no longer exist in shell config.
+  for (let index = commands.length - 1; index >= 0; index--) {
+    const cmd = commands[index];
+    if (!cmd?.autoDetected) continue;
+    const commandToken = (cmd.command || '').trim();
+    const aliasName = cmd.shellAlias || commandToken;
+    if (!aliasName || currentAliasNames.has(aliasName)) continue;
+    commands.splice(index, 1);
+  }
+
+  // Deduplicate auto-detected alias commands by alias name (keep first).
+  const seenAutoAliases = new Set();
+  for (let index = commands.length - 1; index >= 0; index--) {
+    const cmd = commands[index];
+    if (!cmd?.autoDetected) continue;
+    const commandToken = (cmd.command || '').trim();
+    const aliasName = cmd.shellAlias || commandToken;
+    if (!aliasName) continue;
+    if (!seenAutoAliases.has(aliasName)) {
+      seenAutoAliases.add(aliasName);
+      continue;
+    }
+    commands.splice(index, 1);
+  }
+
+  const existing = new Set(commands.map((cmd) => {
+    const commandToken = (cmd.command || '').trim();
+    return cmd.shellAlias || commandToken;
   }).filter(Boolean));
-  for (const alias of getAliases()) {
-    if (!alias.presetId || existing.has(alias.name)) continue;
+
+  for (const alias of aliases) {
+    if (existing.has(alias.name)) continue;
     const preset = PRESETS.find(item => item.presetId === alias.presetId);
     if (!preset) continue;
     commands.push({

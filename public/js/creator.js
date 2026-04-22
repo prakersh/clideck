@@ -13,6 +13,7 @@ const ANIMALS = [
   'Dolphin', 'Lynx', 'Hawk', 'Raven', 'Otter', 'Panther', 'Crane', 'Bison',
 ];
 const MRU_KEY = 'termui-last-command';
+const MRU_LIST_KEY = 'termui-recent-commands';
 const FOLDER_SVG = `<svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>`;
 
 function randomName() {
@@ -74,6 +75,35 @@ function sortedPresets() {
   return [...agents, ...shell];
 }
 
+function commandMruKey(cmd) {
+  if (cmd?.autoDetected) return `alias:${cmd.shellAlias || (cmd.command || '').trim()}`;
+  return `id:${cmd.id}`;
+}
+
+function loadMruList() {
+  let recent = [];
+  try {
+    const parsed = JSON.parse(localStorage.getItem(MRU_LIST_KEY) || '[]');
+    if (Array.isArray(parsed)) recent = parsed.filter(item => typeof item === 'string');
+  } catch {}
+
+  // One-time migration from older single-command MRU.
+  const legacyId = localStorage.getItem(MRU_KEY);
+  if (legacyId && !recent.includes(`id:${legacyId}`)) {
+    recent.unshift(`id:${legacyId}`);
+  }
+  return recent.slice(0, 20);
+}
+
+function saveMruSelection(cmd) {
+  if (!cmd) return;
+  const key = commandMruKey(cmd);
+  if (!key) return;
+  const next = [key, ...loadMruList().filter(item => item !== key)].slice(0, 20);
+  localStorage.setItem(MRU_LIST_KEY, JSON.stringify(next));
+  localStorage.setItem(MRU_KEY, cmd.id);
+}
+
 function createFromPreset(preset, sessionName, cwd, projectId) {
   // Find existing command matching this preset
   let cmd = findCommandForPreset(preset);
@@ -100,7 +130,7 @@ function createFromPreset(preset, sessionName, cwd, projectId) {
     send({ type: 'config.update', config: state.cfg });
   }
   send({ type: 'create', commandId: cmd.id, name: sessionName, cwd, projectId: projectId || undefined, ...estimateSize() });
-  localStorage.setItem(MRU_KEY, cmd.id);
+  saveMruSelection(cmd);
 }
 
 export function openCreator() {
@@ -171,8 +201,10 @@ export function openCreator() {
       const projects = state.cfg.projects || [];
 
       const menu = document.createElement('div');
+      const vpH = window.visualViewport?.height ?? window.innerHeight;
+      const spaceBelow = vpH - rect.bottom - 8;
       menu.className = 'fixed z-[500] bg-slate-800 border border-slate-600 rounded-lg shadow-xl shadow-black/40 py-1 overflow-y-auto';
-      menu.style.maxHeight = '200px';
+      menu.style.maxHeight = Math.min(200, Math.max(100, spaceBelow)) + 'px';
       menu.style.left = rect.left + 'px';
       menu.style.top = (rect.bottom + 4) + 'px';
       menu.style.width = rect.width + 'px';

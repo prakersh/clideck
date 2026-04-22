@@ -217,9 +217,11 @@ function showDropdown() {
   dropdown.style.visibility = 'hidden';
   document.body.appendChild(dropdown);
   const h = dropdown.offsetHeight;
+  const dw = dropdown.offsetWidth;
+  const vpH = window.visualViewport?.height ?? window.innerHeight;
   let left = sidebarRect.right + 32;
-  let top = window.innerHeight - h - gap;
-  if (left + 340 > window.innerWidth - gap) left = window.innerWidth - 340 - gap;
+  let top = vpH - h - gap;
+  if (left + dw > window.innerWidth - gap) left = window.innerWidth - dw - gap;
   if (left < gap) left = gap;
   if (top < gap) top = gap;
   dropdown.style.left = left + 'px';
@@ -275,6 +277,50 @@ function updateDropdown() {
   renderDropdownContent(matches);
 }
 
+function handleAutocompleteKey(key, { allowPrintable = true } = {}) {
+  const matches = getMatches();
+  if (key === 'Escape') {
+    closeDropdown();
+    return true;
+  }
+  if (key === 'ArrowUp') {
+    selectedIdx = Math.max(0, selectedIdx - 1);
+    updateDropdown();
+    return true;
+  }
+  if (key === 'ArrowDown') {
+    selectedIdx = Math.min(matches.length - 1, selectedIdx + 1);
+    updateDropdown();
+    return true;
+  }
+  if (key === 'Enter' || key === 'Tab') {
+    const match = matches[selectedIdx];
+    closeDropdown();
+    if (match) pastePrompt(match.text);
+    return true;
+  }
+  if (key === 'Backspace') {
+    if (buffer.length > 0) {
+      buffer = buffer.slice(0, -1);
+      updateDropdown();
+    } else {
+      closeDropdown();
+    }
+    return true;
+  }
+  if (allowPrintable && typeof key === 'string' && key.length === 1) {
+    buffer += key;
+    updateDropdown();
+    return true;
+  }
+  return true;
+}
+
+export function handleVirtualTerminalKey(key) {
+  if (!active) return false;
+  return handleAutocompleteKey(key, { allowPrintable: true });
+}
+
 export function closeDropdown() {
   active = false;
   buffer = '';
@@ -305,50 +351,8 @@ export function handleTerminalKey(e) {
 
   // If autocomplete is open, consume ALL keys — nothing should leak to hotkeys
   if (active) {
-    const matches = getMatches();
-    if (e.key === 'Escape') {
-      e.preventDefault();
-      closeDropdown();
-      return false;
-    }
-    if (e.key === 'ArrowUp') {
-      e.preventDefault();
-      selectedIdx = Math.max(0, selectedIdx - 1);
-      updateDropdown();
-      return false;
-    }
-    if (e.key === 'ArrowDown') {
-      e.preventDefault();
-      selectedIdx = Math.min(matches.length - 1, selectedIdx + 1);
-      updateDropdown();
-      return false;
-    }
-    if (e.key === 'Enter' || e.key === 'Tab') {
-      e.preventDefault();
-      const match = matches[selectedIdx];
-      closeDropdown();
-      if (match) pastePrompt(match.text);
-      return false;
-    }
-    if (e.key === 'Backspace') {
-      e.preventDefault();
-      if (buffer.length > 0) {
-        buffer = buffer.slice(0, -1);
-        updateDropdown();
-      } else {
-        closeDropdown();
-      }
-      return false;
-    }
-    // Printable character — append to buffer
-    if (e.key.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey) {
-      e.preventDefault();
-      buffer += e.key;
-      updateDropdown();
-      return false;
-    }
-    // Block everything else (modifiers, function keys) while autocomplete is open
     e.preventDefault();
+    handleAutocompleteKey(e.key, { allowPrintable: e.key.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey });
     return false;
   }
 
