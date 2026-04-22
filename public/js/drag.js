@@ -39,9 +39,8 @@ export function initDrag() {
       return;
     }
 
-    // Session drag
-    const row = e.target.closest('.group[data-id]');
-    if (!row) return;
+    // Session drag — `row` is already bound above (line 22); the project-header
+    // branch returned early, so reaching here means the pointer is on a session row.
     const rect = row.getBoundingClientRect();
     dragState = {
       mode: 'session',
