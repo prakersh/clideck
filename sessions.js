@@ -35,7 +35,24 @@ function addBroadcastListener(fn) { broadcastListeners.push(fn); }
 function broadcast(msg) {
   const raw = JSON.stringify(msg);
   for (const c of clients) if (c.readyState === 1) c.send(raw);
-  if (msg.type === 'session.status') plugins.notifyStatus(msg.id, msg.working);
+  if (msg.type === 'session.status') {
+    const s = sessions.get(msg.id);
+    if (s) {
+      s.working = !!msg.working;
+      if (msg.working && msg.source === 'hook') {
+        s._resolvedMenuKey = '';
+      }
+      // Codex approval flows can pause on a menu and then continue into a normal
+      // reply; keep idle finalization enabled there so the completed post-menu
+      // answer is not lost. Other agents still suppress transcript finalization on menu.
+      s._finalizeOnIdle = !msg.working && msg.source !== 'esc' && (msg.source !== 'menu' || s.presetId === 'codex');
+      // if (s.presetId === 'claude-code') {
+      //   console.log(`[claude] broadcast status session=${msg.id.slice(0,8)} working=${!!msg.working} source=${msg.source} finalizeOnIdle=${!!s._finalizeOnIdle}`);
+      // }
+      // if (s.presetId === 'codex') console.log(`[codex] status session=${msg.id.slice(0,8)} working=${!!msg.working} source=${msg.source}`);
+    }
+    plugins.notifyStatus(msg.id, msg.working, msg.source);
+  }
   for (const fn of broadcastListeners) try { fn(msg); } catch {}
 }
 
@@ -118,7 +135,7 @@ function loadPersistedSessions() {
 
 function buildTelemetryEnv(id, cmd) {
   const preset = findPresetForCommand(cmd.command);
-  const env = {};
+  const env = { CLIDECK_SESSION_ID: id };
   if (!preset) return env;
 
   const telemetryEnabled = cmd.telemetryEnabled ?? (preset.presetId === 'claude-code');
@@ -141,7 +158,8 @@ function buildTelemetryEnv(id, cmd) {
       ? `${process.env.GEMINI_TELEMETRY_OTLP_HEADERS},${otelHeaders}`
       : otelHeaders;
   }
-  if (preset.bridge === 'opencode') env.CLIDECK_INGRESS_TOKEN = ingressToken;
+  // Make ingress token available to all spawned agents and their hook scripts
+  env.CLIDECK_INGRESS_TOKEN = ingressToken;
   return env;
 }
 
@@ -169,14 +187,39 @@ function spawnSession(id, cmd, parts, cwd, name, themeId, commandId, savedToken,
   const sessionIdRe = cmd.sessionIdPattern ? new RegExp(cmd.sessionIdPattern, 'i') : null;
   const bin = binName(cmd.command);
   const preset = PRESETS.find(p => binName(p.command) === bin);
-  const session = { name, themeId, commandId, cwd, pty: term, chunks: [], chunksSize: 0, sessionToken: savedToken || null, projectId: projectId || null, presetId: preset?.presetId || 'shell' };
+  const session = { name, themeId, commandId, cwd, pty: term, chunks: [], chunksSize: 0, sessionToken: savedToken || null, projectId: projectId || null, presetId: preset?.presetId || 'shell', working: undefined };
   sessions.set(id, session);
+  transcript.setFinalizeOnIdle(id, ['claude-code', 'codex', 'gemini-cli', 'opencode', 'clideck-agent'].includes(session.presetId) ? session.presetId : null);
 
-  // Watch for telemetry — if config isn't set up, frontend will prompt
-  if (preset?.telemetrySetup && !(cmd.telemetryEnabled && cmd.telemetryStatus?.ok)) telemetry.watchSession(id, bin);
+  // Always watch telemetry-backed agents so OTLP fallback matching can attach
+  // early events to this session even when the agent omits clideck.session_id.
+  // The receiver itself decides whether to surface a setup prompt.
+  if (preset?.telemetryEnv) telemetry.watchSession(id, bin);
   if (preset?.bridge === 'opencode') opencodeBridge.watchSession(id, cwd);
 
+  function injectRolePrompt() {
+    if (!session.pendingRolePrompt) return;
+    transcript.recordInjectedInput(id, session.pendingRolePrompt);
+    term.write(session.pendingRolePrompt);
+    setTimeout(() => term.write('\r'), 150);
+    console.log(`Session ${id.slice(0, 8)}: injected role prompt`);
+    delete session.pendingRolePrompt;
+    delete session._rolePromptTimer;
+  }
+
   term.onData((data) => {
+    // Role prompts should be injected only when the agent is likely ready for
+    // input. For Codex, use the first OTLP startup event instead of a blind
+    // fixed startup delay; other agents keep the existing delayed path.
+    if (session.pendingRolePrompt && !session._rolePromptTimer) {
+      if (session.presetId === 'codex') {
+        if (telemetry.hasEvents(id)) injectRolePrompt();
+      } else {
+        session._rolePromptTimer = setTimeout(() => {
+          if (session.pendingRolePrompt) injectRolePrompt();
+        }, 3000);
+      }
+    }
     session.chunks.push(data);
     session.chunksSize += data.length;
     while (session.chunksSize > MAX_BUFFER && session.chunks.length > 1) {
@@ -199,14 +242,30 @@ function spawnSession(id, cmd, parts, cwd, name, themeId, commandId, savedToken,
 
   term.onExit(() => {
     // Skip cleanup if this PTY was replaced by a restart
-    if (sessions.get(id)?.pty !== term) return;
+    const s = sessions.get(id);
+    if (s?.pty !== term) return;
     activity.clear(id);
     telemetry.clear(id);
     opencodeBridge.clear(id);
-    transcript.clear(id);
     plugins.clearStatus(id);
+    // If resumable and token captured, move to resumable list (keep transcript for search)
+    if (!s.ephemeral && cmd.canResume && cmd.resumeCommand && s.sessionToken) {
+      resumable.push({
+        id, name: s.name, commandId: s.commandId, presetId: s.presetId || 'shell', cwd: s.cwd,
+        themeId: s.themeId, sessionToken: s.sessionToken, projectId: s.projectId, muted: !!s.muted,
+        roleName: s.roleName || null,
+        lastPreview: s.lastPreview || '', lastActivityAt: s.lastActivityAt || null,
+        savedAt: new Date().toISOString(),
+      });
+      console.log(`Session ${id.slice(0, 8)}: moved to resumable on exit (token: ${s.sessionToken.slice(0, 12)}…)`);
+    } else {
+      transcript.clear(id);
+    }
     sessions.delete(id);
     broadcast({ type: 'closed', id });
+    if (!s.ephemeral && cmd.canResume && s.sessionToken) {
+      broadcast({ type: 'sessions.resumable', list: getResumable() });
+    }
   });
 
   return null;
@@ -232,6 +291,18 @@ function create(msg, ws, cfg) {
     return;
   }
 
+  // If a role was selected, store identity on session and queue prompt injection
+  if (msg.roleId) {
+    const role = (cfg.roles || []).find(r => r.id === msg.roleId);
+    if (role) {
+      const s = sessions.get(id);
+      if (s) {
+        s.roleName = role.name;
+        if (role.instructions) s.pendingRolePrompt = role.instructions;
+      }
+    }
+  }
+
   const createdPresetId = PRESETS.find(p => binName(p.command) === binName(cmd.command))?.presetId || 'shell';
   const installId = msg.installId || undefined;
   broadcast({ type: 'created', id, name, themeId, commandId: cmd.id, presetId: createdPresetId, projectId, installId });
@@ -241,6 +312,33 @@ function create(msg, ws, cfg) {
   if (preset && (preset.telemetrySetup || preset.bridge) && !(cmd.telemetryEnabled && cmd.telemetryStatus?.ok)) {
     broadcast({ type: 'session.needsSetup', id });
   }
+}
+
+// --- Programmatic session creation (for plugins / internal use) ---
+
+function createProgrammatic(opts, cfg) {
+  const id = crypto.randomUUID();
+  let cmd;
+  if (opts.presetId) cmd = cfg.commands.find(c => c.presetId === opts.presetId);
+  else if (opts.commandId) cmd = cfg.commands.find(c => c.id === opts.commandId);
+  if (!cmd) return { error: 'Command not found' };
+
+  const parts = parseCommand(cmd.command);
+  const cwd = resolveValidDir(opts.cwd || cmd.defaultPath || cfg.defaultPath);
+  const themeId = opts.themeId || cfg.defaultTheme || 'default';
+  const name = opts.name || cmd.label;
+  const projectId = opts.projectId || null;
+
+  const err = spawnSession(id, cmd, parts, cwd, name, themeId, cmd.id, null, projectId);
+  if (err) return { error: err.message };
+
+  const s = sessions.get(id);
+  if (s && opts.roleName) s.roleName = opts.roleName;
+  if (s && opts.ephemeral) s.ephemeral = true;
+
+  const presetId = PRESETS.find(p => binName(p.command) === binName(cmd.command))?.presetId || 'shell';
+  broadcast({ type: 'created', id, name, themeId, commandId: cmd.id, presetId, projectId });
+  return { id };
 }
 
 // --- Resume a persisted session ---
@@ -279,7 +377,11 @@ function resume(msg, ws, cfg) {
     return;
   }
 
-  if (saved.muted) { const s = sessions.get(id); if (s) s.muted = true; }
+  const s = sessions.get(id);
+  if (s) {
+    if (saved.muted) s.muted = true;
+    if (saved.roleName) s.roleName = saved.roleName;
+  }
 
   // Remove from resumable list and notify all clients
   resumable = resumable.filter(s => s.id !== id);
@@ -292,11 +394,37 @@ function resume(msg, ws, cfg) {
 
 // --- Standard session operations ---
 
+function writeSessionInput(id, data) {
+  transcript.trackInput(id, data);
+  sessions.get(id)?.pty.write(data);
+}
+
 function input(msg) {
   const data = plugins.transformInput(msg.id, msg.data);
   activity.trackIn(msg.id, data.length);
-  transcript.trackInput(msg.id, data);
-  sessions.get(msg.id)?.pty.write(data);
+  const s = sessions.get(msg.id);
+  if (!s) return;
+  // Menu choice selected → back to working (Enter or digit keys only)
+  if (s._menuKey && !s.working && (data === '\r' || /^[1-9]$/.test(data))) {
+    // Approval/denial menus can leave a transient tool line as the latest
+    // parsed candidate; clear it before the next real reply starts.
+    transcript.clearAgentCandidate(msg.id);
+    s.pty.write(data);
+    // Autopilot may need to retry the same approval menu if the first Enter
+    // does not actually take, so only suppress same-menu re-detection for
+    // manual flows.
+    if (!plugins.shouldAutoApproveMenu(msg.id)) s._resolvedMenuKey = s._menuKey;
+    if (s._menuActiveVersion) s._menuConsumedVersion = s._menuActiveVersion;
+    s._menuKey = '';
+    broadcast({ type: 'session.menu', id: msg.id, choices: [] });
+    broadcast({ type: 'session.status', id: msg.id, working: true, source: 'menu-input' });
+    return;
+  }
+  writeSessionInput(msg.id, data);
+  if (data === '\x1b' && s.working) {
+    transcript.clearAgentCandidate(msg.id);
+    broadcast({ type: 'session.status', id: msg.id, working: false, source: 'esc' });
+  }
 }
 function resize(msg) { sessions.get(msg.id)?.pty.resize(msg.cols, msg.rows); }
 
@@ -333,15 +461,14 @@ function close(msg, cfg) {
 // Uses resume command if available, otherwise re-launches the original command.
 function restart(msg, ws, cfg) {
   const id = msg.id;
-  console.log('[restart] received', { id, themeId: msg.themeId });
+  // console.log('[restart] received', { id, themeId: msg.themeId });
   const s = sessions.get(id);
-  if (!s) { console.log('[restart] FAIL: session not found'); ws.send(JSON.stringify({ type: 'session.restarted', id, error: 'not found' })); return; }
+  if (!s) { ws.send(JSON.stringify({ type: 'session.restarted', id, error: 'not found' })); return; }
   const cmd = cfg.commands.find(c => c.id === s.commandId);
-  if (!cmd) { console.log('[restart] FAIL: command not found, commandId=', s.commandId); ws.send(JSON.stringify({ type: 'session.restarted', id, error: 'command missing' })); return; }
+  if (!cmd) { ws.send(JSON.stringify({ type: 'session.restarted', id, error: 'command missing' })); return; }
 
   const themeId = msg.themeId || s.themeId;
   const canResume = cmd.canResume && cmd.resumeCommand && s.sessionToken;
-  console.log('[restart] canResume=', canResume, 'token=', s.sessionToken?.slice(0,12), 'cmd=', cmd.command);
 
   let parts;
   if (canResume) {
@@ -349,37 +476,43 @@ function restart(msg, ws, cfg) {
   } else {
     parts = parseSpawnCommand(cmd.command);
   }
-  console.log('[restart] parts=', parts);
 
   const savedToken = s.sessionToken;
-  const { name, cwd, commandId, projectId } = s;
+  const { name, cwd, commandId, projectId, roleName, muted, lastPreview, lastActivityAt } = s;
 
   activity.clear(id);
   telemetry.clear(id);
   opencodeBridge.clear(id);
   transcript.clear(id);
 
-  console.log('[restart] killing old pty');
   s.pty.kill();
   sessions.delete(id);
 
-  console.log('[restart] spawning new pty, themeId=', themeId, 'cwd=', cwd);
   const err = spawnSession(id, cmd, parts, cwd, name, themeId, commandId, savedToken, projectId, msg.cols, msg.rows);
   if (err) {
-    console.error('[restart] FAIL spawn:', err.message);
+    console.error('[restart] spawn failed:', err.message);
     broadcast({ type: 'session.restarted', id, error: err.message });
     return;
   }
 
-  console.log('[restart] SUCCESS, broadcasting session.restarted');
+  const next = sessions.get(id);
+  if (next) {
+    next.roleName = roleName || null;
+    next.muted = !!muted;
+    next.lastPreview = lastPreview || '';
+    next.lastActivityAt = lastActivityAt || null;
+  }
+
   broadcast({ type: 'session.restarted', id, resumed: !!canResume });
 }
 
 function list() {
   return [...sessions].map(([id, s]) => ({
     id, name: s.name, themeId: s.themeId, commandId: s.commandId, presetId: s.presetId || 'shell', projectId: s.projectId, muted: !!s.muted,
+    roleName: s.roleName || null,
     // Last preview text for sidebar display on reconnect
     lastPreview: s.lastPreview || '', lastActivityAt: s.lastActivityAt || null,
+    menu: s._menuKey ? JSON.parse(s._menuKey) : undefined,
   }));
 }
 
@@ -411,7 +544,17 @@ function getResumable(cfg) {
 
 function sendBuffers(ws) {
   for (const [id, s] of sessions) {
-    if (s.chunks.length) ws.send(JSON.stringify({ type: 'output', id, data: s.chunks.join('') }));
+    if (['claude-code', 'codex', 'gemini-cli', 'opencode', 'clideck-agent'].includes(s.presetId) && !s.working) {
+      const text = transcript.getReplayText(id, s.presetId);
+      if (text) {
+        ws.send(JSON.stringify({ type: 'session.history', id, text, replay: true }));
+        continue;
+      }
+    }
+    if (s.chunks.length) {
+      const data = s.chunks.join('');
+      ws.send(JSON.stringify({ type: 'output', id, data, replay: true }));
+    }
   }
 }
 
@@ -422,6 +565,7 @@ function saveSessions(cfg) {
   let skippedNoToken = 0;
   const live = [...sessions]
     .filter(([, s]) => {
+      if (s.ephemeral) return false;
       const cmd = cfg.commands.find(c => c.id === s.commandId);
       if (!cmd?.canResume || !cmd.resumeCommand) return false;
       // If resume needs a session ID, we must have captured one
@@ -434,6 +578,7 @@ function saveSessions(cfg) {
     .map(([id, s]) => ({
       id, name: s.name, commandId: s.commandId, presetId: s.presetId || 'shell', cwd: s.cwd,
       themeId: s.themeId, sessionToken: s.sessionToken, projectId: s.projectId, muted: !!s.muted,
+      roleName: s.roleName || null,
       lastPreview: s.lastPreview || '', lastActivityAt: s.lastActivityAt || null,
       savedAt: new Date().toISOString(),
     }));
@@ -444,7 +589,10 @@ function saveSessions(cfg) {
   const data = [...live, ...pending];
 
   syncPersistedSessions(data);
-  if (skippedNoToken > 0) console.warn(`Skipped ${skippedNoToken} resumable session(s): no session token captured`);
+  if (skippedNoToken > 0 && skippedNoToken !== lastSkippedNoTokenWarn) {
+    console.warn(`Skipped ${skippedNoToken} resumable session(s): no session token captured`);
+  }
+  lastSkippedNoTokenWarn = skippedNoToken || null;
   return data.length;
 }
 
@@ -455,6 +603,7 @@ function loadSessions() {
 
 let autoSaveInterval = null;
 let getConfigFn = null;
+let lastSkippedNoTokenWarn = null;
 
 function startAutoSave(getConfig) {
   getConfigFn = getConfig;
@@ -481,7 +630,7 @@ function shutdown(cfg) {
 
 module.exports = {
   clients, broadcast, addBroadcastListener, getSessions: () => sessions,
-  create, resume, restart, input, resize, rename, setTheme, setMute, setProject, setPreview, close,
+  create, createProgrammatic, resume, restart, input, resize, rename, setTheme, setMute, setProject, setPreview, close,
   list, getResumable, sendBuffers,
   loadSessions, startAutoSave, shutdown,
 };

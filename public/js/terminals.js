@@ -1,8 +1,9 @@
 import { state, send } from './state.js';
-import { esc, resolveIconPath } from './utils.js';
+import { esc, miniMarkdown, resolveIconPath } from './utils.js';
 import { resolveTheme, resolveAccent, applyTheme } from './profiles.js';
-import { attachToTerminal } from './hotkeys.js';
+import { attachToTerminal, registerHotkey } from './hotkeys.js';
 import { closeDropdown } from './prompts.js';
+import { showToast } from './toast.js';
 function isLightBg(themeId) {
   const bg = resolveTheme(themeId)?.background;
   if (!bg || bg[0] !== '#') return false;
@@ -62,12 +63,14 @@ function startBounce(container) {
     return { el: c, x: 10 + i * rand(14, 22), y: floor - rand(0, 15), vx: rand(0.6, 1.3), vy: -rand(2.5, 5), r: radii[i] };
   });
 
-  let raf;
-  function step() {
+  let raf, lastFrame = 0;
+  function step(now = performance.now()) {
+    const dt = lastFrame ? Math.min((now - lastFrame) / 16.67, 4) : 1;
+    lastFrame = now;
     balls.forEach(b => {
-      b.vy += gravity;
-      b.x += b.vx;
-      b.y += b.vy;
+      b.vy += gravity * dt;
+      b.x += b.vx * dt;
+      b.y += b.vy * dt;
       if (b.y > floor) { b.y = floor; b.vy *= -restitution; }
     });
     for (let i = 0; i < balls.length; i++) {
@@ -117,32 +120,74 @@ function positionMenu(menu, anchorRect) {
   menu.style.visibility = 'hidden';
   document.body.appendChild(menu);
   const mh = menu.offsetHeight;
+  const mw = menu.offsetWidth;
   const gap = 4;
   const vh = window.visualViewport?.height ?? window.innerHeight;
   const vTop = window.visualViewport?.offsetTop ?? 0;
   const spaceBelow = (vh + vTop) - anchorRect.bottom - gap;
+  const left = Math.min(
+    Math.max(gap, anchorRect.left),
+    Math.max(gap, window.innerWidth - mw - gap)
+  );
   menu.style.top = (spaceBelow >= mh
     ? anchorRect.bottom + gap
     : Math.max(gap, anchorRect.top - gap - mh)) + 'px';
-  menu.style.right = (window.innerWidth - anchorRect.right) + 'px';
+  menu.style.left = left + 'px';
   menu.style.visibility = '';
 }
 
-function openMenu(sessionId, anchorEl) {
+function pointRect(x, y) {
+  return { top: y, bottom: y, left: x, right: x };
+}
+
+async function copyTerminalSelection(sessionId) {
+  const entry = state.terms.get(sessionId);
+  const text = entry?.term?.getSelection() || '';
+  if (!text) return;
+  try {
+    await navigator.clipboard.writeText(text);
+  } catch {
+    showToast('Clipboard write failed.', { type: 'error' });
+  }
+}
+
+async function pasteIntoTerminal(sessionId) {
+  try {
+    const text = await navigator.clipboard.readText();
+    if (text) send({ type: 'input', id: sessionId, data: text });
+  } catch {
+    showToast('Clipboard read failed.', { type: 'error' });
+  }
+}
+
+function openMenu(sessionId, anchor) {
   closeMenu();
 
-  const rect = anchorEl.getBoundingClientRect();
+  const rect = anchor?.getBoundingClientRect ? anchor.getBoundingClientRect() : pointRect(anchor.x, anchor.y);
   const menu = document.createElement('div');
   menu.className = 'fixed z-[400] min-w-[160px] bg-slate-800 border border-slate-700 rounded-lg shadow-xl shadow-black/40 py-1';
 
   const entry = state.terms.get(sessionId);
   const projects = state.cfg.projects || [];
+  const hasSelection = !!entry?.term?.hasSelection();
 
   let html = '';
+
+  html += `
+    <button class="menu-action flex items-center gap-2.5 w-full px-3 py-2 text-sm ${hasSelection ? 'text-slate-300 hover:bg-slate-700' : 'text-slate-600 cursor-default'} transition-colors text-left" data-action="copy" ${hasSelection ? '' : 'disabled'}>
+      <span class="flex-shrink-0 text-slate-400"><svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg></span>
+      Copy
+    </button>
+    <button class="menu-action flex items-center gap-2.5 w-full px-3 py-2 text-sm text-slate-300 hover:bg-slate-700 transition-colors text-left" data-action="paste">
+      <span class="flex-shrink-0 text-slate-400"><svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2v-2"/><path d="M8 2h6a2 2 0 0 1 2 2v6H8a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2Z"/><path d="M8 10v4"/><path d="M12 14H4a2 2 0 0 0-2 2v2"/></svg></span>
+      Paste
+    </button>
+    <div class="border-t border-slate-700/50 my-1"></div>`;
 
   // Project submenu items
   if (projects.length) {
     html += `<div class="px-3 py-1 text-[10px] font-semibold uppercase tracking-wider text-slate-600">Move to project</div>`;
+    html += `<div class="tmx-scroll py-0.5" style="max-height:10rem;overflow-y:auto">`;
     for (const p of projects) {
       const active = entry?.projectId === p.id;
       html += `<button class="menu-action flex items-center gap-2 w-full px-3 py-1.5 text-sm ${active ? 'text-blue-400' : 'text-slate-300'} hover:bg-slate-700 transition-colors text-left" data-action="project" data-project-id="${p.id}">
@@ -150,6 +195,7 @@ function openMenu(sessionId, anchorEl) {
         ${esc(p.name)}${active ? ' ✓' : ''}
       </button>`;
     }
+    html += `</div>`;
     if (entry?.projectId) {
       html += `<button class="menu-action flex items-center gap-2 w-full px-3 py-1.5 text-sm text-slate-500 hover:bg-slate-700 transition-colors text-left" data-action="unproject">
         <span class="w-2 h-2 rounded-full flex-shrink-0 border border-slate-600"></span>
@@ -187,12 +233,16 @@ function openMenu(sessionId, anchorEl) {
   menu.innerHTML = html;
   positionMenu(menu, rect);
 
-  const onClick = (e) => {
+  const onClick = async (e) => {
     const btn = e.target.closest('.menu-action');
     if (!btn) return;
     closeMenu();
     const action = btn.dataset.action;
-    if (action === 'rename') {
+    if (action === 'copy') {
+      await copyTerminalSelection(sessionId);
+    } else if (action === 'paste') {
+      await pasteIntoTerminal(sessionId);
+    } else if (action === 'rename') {
       startRename(sessionId);
     } else if (action === 'mute') {
       toggleMute(sessionId);
@@ -521,7 +571,7 @@ export function estimateSize() {
 }
 
 // --- Terminal management ---
-export function addTerminal(id, name, themeId, commandId, projectId, muted, lastPreview) {
+export function addTerminal(id, name, themeId, commandId, projectId, muted, lastPreview, presetId) {
   if (state.terms.has(id)) return;
   themeId = themeId || state.cfg.defaultTheme || 'default';
 
@@ -574,37 +624,95 @@ export function addTerminal(id, name, themeId, commandId, projectId, muted, last
   term.loadAddon(fit);
   term.onData(data => send({ type: 'input', id, data }));
 
-  // [SCREEN-CAPTURE] extract terminal buffer when BOTH idle AND render-silent (2s)
-  // Decoupled from status: telemetry knows when agent is done, onRender knows when terminal is done
-  const _telemetryOnly = cmd?.presetId === 'claude-code' || cmd?.presetId === 'codex' || cmd?.presetId === 'gemini-cli';
-  let _screenTimer = null, _renderSilent = false;
-  function _tryScreenCapture() {
+  // [TRANSCRIPT-CAPTURE] initial settled capture plus one delayed idle save
+  let _captureTimer = null, _renderSilent = false, _lastTyping = 0, _initialCaptureDone = false, _idleSaveTimer = null;
+  function _sendCapture() {
     const entry = state.terms.get(id);
-    if (!entry?.pendingScreenCapture || (!_renderSilent && !_telemetryOnly) || !entry.term) return;
-    entry.pendingScreenCapture = false;
+    if (!entry?.term) return;
     const buf = entry.term.buffer.active;
     const lines = [];
     for (let i = 0; i < buf.length; i++) { const line = buf.getLine(i); if (line) lines.push(line.translateToString(true)); }
     send({ type: 'terminal.buffer', id, lines });
   }
-  let _idleTimer = null, _workTimer = null, _lastTyping = 0, _lastRender = 0;
-  term.onData(() => { _lastTyping = Date.now(); });
-  term.onRender(() => {
-    _lastRender = Date.now();
+  function _isChrome(t) {
+    return !t
+      || /^[─━═\u2500-\u257f]+$/.test(t)
+      || /^[▀▄█▌▐░▒▓╭╮╰╯│╔╗╚╝║]+$/.test(t)
+      || (/[█▀▄▌▐░▒▓]/.test(t) && /^[█▀▄▌▐░▒▓\s]+$/.test(t))
+      || /^[❯>$%#]\s*$/.test(t)
+      || /^(esc to interrupt|\? for shortcuts)$/i.test(t);
+  }
+  function _hasContent() {
+    const entry = state.terms.get(id);
+    if (!entry?.term) return false;
+    const buf = entry.term.buffer.active;
+    for (let i = 0; i < buf.length; i++) {
+      const text = buf.getLine(i)?.translateToString(true).trim();
+      if (!_isChrome(text)) return true;
+    }
+    return false;
+  }
+  function _tryCapture() {
+    const entry = state.terms.get(id);
+    if (!_renderSilent || Date.now() - _lastTyping < 2000) return;
+    // Initial capture: first time render settles with real content, capture regardless of working/idle
+    if (!_initialCaptureDone) {
+      if (!_hasContent()) return; // retry on next silence
+      _initialCaptureDone = true;
+      _sendCapture();
+      return;
+    }
+  }
+  term.onData(() => {
+    _lastTyping = Date.now();
+    // User typing invalidates pending capture — will re-try after silence
     _renderSilent = false;
-    clearTimeout(_screenTimer);
-    _screenTimer = setTimeout(() => { _renderSilent = true; _tryScreenCapture(); }, 2000);
+    clearTimeout(_captureTimer);
+    _captureTimer = setTimeout(() => { _renderSilent = true; _tryCapture(); }, 2000);
   });
-  term.onWriteParsed(() => { if (Date.now() - _lastTyping < 500) return; const entry = state.terms.get(id); if (entry) entry.lastRenderAt = Date.now(); if (_telemetryOnly) return; if (!_workTimer) _workTimer = setTimeout(() => { _workTimer = null; if (Date.now() - _lastRender < 500) setStatus(id, true); }, 1500); clearTimeout(_idleTimer); _idleTimer = setTimeout(() => { clearTimeout(_workTimer); _workTimer = null; setStatus(id, false); send({ type: 'session.statusReport', id, working: false }); }, 1500); });
+  term.onRender(() => {
+    _renderSilent = false;
+    clearTimeout(_captureTimer);
+    _captureTimer = setTimeout(() => { _renderSilent = true; _tryCapture(); }, 2000);
+  });
+  term.onWriteParsed(() => {
+    if (Date.now() - _lastTyping < 500) return;
+    const entry = state.terms.get(id);
+    if (entry) entry.lastRenderAt = Date.now();
+  });
 
-  // Expose capture function so setStatus can trigger it when idle arrives after render silence
-  setTimeout(() => { const e = state.terms.get(id); if (e) e.tryScreenCapture = _tryScreenCapture; }, 0);
+  // Expose capture function so setStatus can schedule a retry
+  setTimeout(() => {
+    const e = state.terms.get(id);
+    if (e) {
+      e.tryCapture = _tryCapture;
+      e.sendCaptureNow = _sendCapture;
+      e.scheduleIdleCapture = () => {
+        clearTimeout(_idleSaveTimer);
+        _idleSaveTimer = setTimeout(() => {
+          const entry = state.terms.get(id);
+          if (!entry || entry.working) return;
+          _sendCapture();
+        }, 300);
+      };
+      e.cancelIdleCapture = () => clearTimeout(_idleSaveTimer);
+    }
+  }, 0);
 
   term.open(el);
-  attachToTerminal(term);
-
+  attachToTerminal(term, presetId);
+  const onContextMenu = (e) => {
+    if (e.shiftKey) return;
+    e.preventDefault();
+    e.stopPropagation();
+    select(id);
+    openMenu(id, { x: e.clientX, y: e.clientY });
+  };
+  el.addEventListener('contextmenu', onContextMenu);
   let fitted = false;
   let pending = [];
+  // [FIT-GUARD] only call fit() when proposed dimensions actually change — prevents
+  // unnecessary buffer reflows that cause scrollbar jumpiness on sub-pixel layout shifts
   let fitRaf = 0;
   let lastSize = { width: 0, height: 0, cols: 0, rows: 0 };
 
@@ -653,8 +761,21 @@ export function addTerminal(id, name, themeId, commandId, projectId, muted, last
   });
   ro.observe(el);
 
-  // Safety: if RO hasn't fired within 500ms, flush anyway to avoid unbounded queue
-  setTimeout(flushPending, 500);
+  // Safety: if RO hasn't fired within 500ms, let visible terminals proceed.
+  // For hidden/unmeasured terminals, keep the PTY at a reasonable fallback size
+  // but do not flush queued output until a real measured fit happens.
+  setTimeout(() => {
+    if (!fitted) {
+      if (!el.offsetWidth) {
+        term.resize(120, 30);
+        send({ type: 'resize', id, cols: 120, rows: 30 });
+        return;
+      }
+      flushPending();
+    }
+  }, 500);
+
+  const cancelFit = () => { if (fitRaf) { cancelAnimationFrame(fitRaf); fitRaf = 0; } };
 
   state.terms.set(id, {
     term,
@@ -662,13 +783,12 @@ export function addTerminal(id, name, themeId, commandId, projectId, muted, last
     el,
     ro,
     scheduleFit,
-    cancelFit: () => {
-      if (!fitRaf) return;
-      cancelAnimationFrame(fitRaf);
-      fitRaf = 0;
-    },
+    cancelFit,
+    cancelFitRaf: cancelFit,
+    onContextMenu,
     themeId,
     commandId,
+    presetId: presetId || null,
     projectId: projectId || null,
     muted: !!muted,
     working: !hasBridge,
@@ -686,6 +806,9 @@ export function addTerminal(id, name, themeId, commandId, projectId, muted, last
     lastPreviewText: lastPreview || '',
     searchText: '',
   });
+
+  document.getElementById('empty').style.display = 'none';
+  document.getElementById('terminals').style.pointerEvents = '';
 
   if (state.layout.mode === 'split') {
     const left = state.layout.panes[0];
@@ -712,6 +835,7 @@ export function removeTerminal(id) {
   entry.cancelFitRaf?.();
   entry.ro?.disconnect();
   entry.cancelFit?.();
+  if (entry.onContextMenu) entry.el.removeEventListener?.('contextmenu', entry.onContextMenu);
   entry.term.dispose();
   entry.el.remove();
   state.terms.delete(id);
@@ -745,6 +869,8 @@ export function select(id, options = {}) {
   if (!state.terms.has(id)) return;
   const { focusTerminal = true, pane = null } = options;
   closeDropdown();
+  closePillLog();
+  document.querySelectorAll('.pill-row.active-session').forEach(r => r.classList.remove('active-session'));
 
   if (state.layout.mode === 'split') {
     const targetPane = pane ?? state.layout.focusedPane;
@@ -831,11 +957,12 @@ function setStatus(id, working) {
 
   // Notify on working → idle transition
   if (wasWorking && !working && !entry.muted) {
+    const minWork = state.cfg.notifyMinWork ?? 0;
     const workDuration = (Date.now() - (entry.workStartedAt || 0)) / 1000;
-    const minWork = state.cfg.notifyMinWork || 10;
     if (workDuration >= minWork) {
-      // Sound: plays unless this session is the one you're looking at
-      if (state.cfg.notifySoundEnabled !== false && state.active !== id) {
+      entry.workStartedAt = null;
+      // Sound: all sessions when tab unfocused, all except active when focused
+      if (state.cfg.notifySoundEnabled !== false && (!document.hasFocus() || state.active !== id)) {
         new Audio(`/fx/${(state.cfg.notifySound || 'default-beep')}.mp3`).play().catch(() => {});
       }
       // Browser notification: plays when the CliDeck tab is not focused
@@ -850,11 +977,15 @@ function setStatus(id, working) {
     }
   }
 
-  // Mark idle so the onRender silence watcher can capture .screen
-  // Also try immediately — renders may already be silent
-  if (wasWorking && !working) { entry.pendingScreenCapture = true; entry.tryScreenCapture?.(); }
+  // Save once shortly after idle unless the agent resumes first.
+  if (wasWorking && !working) {
+    entry.scheduleIdleCapture?.();
+  }
 
-  if (working) entry.workStartedAt = Date.now();
+  if (working) {
+    entry.cancelIdleCapture?.();
+    if (!entry.workStartedAt) entry.workStartedAt = Date.now();
+  }
 
   const el = document.querySelector(`.group[data-id="${id}"] .session-status`);
   if (!el) return;
@@ -1022,6 +1153,7 @@ export function startProjectRename(projectId) {
 // --- Project grouping ---
 
 const CHEVRON_SVG = `<svg class="w-3 h-3 transition-transform" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5"><path d="M6 9l6 6 6-6"/></svg>`;
+const PATH_SVG = `<svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7.5A1.5 1.5 0 0 1 4.5 6h4.379a1.5 1.5 0 0 1 1.06.44l1.122 1.12a1.5 1.5 0 0 0 1.06.44H19.5A1.5 1.5 0 0 1 21 9.5v8A1.5 1.5 0 0 1 19.5 19h-15A1.5 1.5 0 0 1 3 17.5v-10Z"/></svg>`;
 
 const PROJECT_COLORS = ['#3b82f6', '#8b5cf6', '#ec4899', '#f59e0b', '#10b981', '#ef4444', '#06b6d4', '#84cc16'];
 
@@ -1039,8 +1171,9 @@ export function regroupSessions() {
     const row = document.querySelector(`.group[data-id="${id}"]`);
     if (row) { row.remove(); rows.set(id, row); }
   }
-  // Remove old project headers, resumable rows, and resumable section
+  // Remove old project headers, resumable rows, pill rows, and resumable section
   list.querySelectorAll('.project-group').forEach(el => el.remove());
+  list.querySelectorAll('.pill-row').forEach(el => el.remove());
   list.querySelectorAll('[data-resumable-id]').forEach(el => el.remove());
   document.getElementById('resumable-section')?.remove();
 
@@ -1057,7 +1190,11 @@ export function regroupSessions() {
         <span class="w-2 h-2 rounded-full flex-shrink-0" style="background:${projectColor(proj)}"></span>
         <span class="project-name flex-1 text-[11px] font-semibold uppercase tracking-wider text-slate-500 truncate">${esc(proj.name)}</span>
         <span class="project-count text-[10px] text-slate-600">0</span>
-        <button class="project-menu-btn opacity-0 group-hover:opacity-100 text-slate-600 hover:text-slate-400 flex-shrink-0 transition-opacity p-0.5" title="Project menu">
+        <button class="project-path-btn ${proj.path ? 'text-slate-600 hover:text-slate-300' : 'text-slate-700 cursor-default'} flex-shrink-0 p-0.5" title="${proj.path ? 'Open project folder' : 'Project path not set'}" ${proj.path ? '' : 'disabled'}>
+          ${PATH_SVG}
+        </button>
+        <span class="project-plugin-actions"></span>
+        <button class="project-menu-btn text-slate-600 hover:text-slate-400 flex-shrink-0 p-0.5" title="Project menu">
           <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 20 20"><circle cx="10" cy="4" r="1.5" fill="currentColor"/><circle cx="10" cy="10" r="1.5" fill="currentColor"/><circle cx="10" cy="16" r="1.5" fill="currentColor"/></svg>
         </button>
       </div>
@@ -1080,6 +1217,17 @@ export function regroupSessions() {
 
   const firstGroup = list.querySelector('.project-group');
   for (const row of ungrouped) list.insertBefore(row, firstGroup);
+
+  // Place pill rows at top of their project groups, or ungrouped at top
+  const ungroupedPills = [];
+  for (const [, pill] of state.pills) {
+    if (pill.projectId) {
+      const container = list.querySelector(`.project-group[data-project-id="${pill.projectId}"] .project-sessions`);
+      if (container) { container.insertBefore(buildPillRow(pill), container.firstChild); continue; }
+    }
+    ungroupedPills.push(pill);
+  }
+  for (const pill of ungroupedPills) list.insertBefore(buildPillRow(pill), firstGroup);
 
   // Place resumable sessions into their project groups or ungrouped section
   const ungroupedResumable = [];
@@ -1114,6 +1262,7 @@ export function regroupSessions() {
   }
 
   applyFilter();
+  list.dispatchEvent(new Event('projects-rendered'));
 }
 
 export function toggleProjectCollapse(projectId) {
@@ -1257,4 +1406,256 @@ setInterval(() => {
   }
 }, 60000);
 
+// Refresh pill elapsed times every second
+setInterval(() => {
+  for (const [, pill] of state.pills) {
+    if (!pill.startedAt) continue;
+    const el = document.querySelector(`.pill-row[data-pill-id="${pill.id}"] .pill-elapsed`);
+    if (el) el.textContent = formatElapsed(pill.startedAt);
+  }
+}, 1000);
+
+// --- Session pills (plugin virtual rows) ---
+
+export function addPill(pill) {
+  state.pills.set(pill.id, { ...pill, logs: [] });
+  regroupSessions();
+}
+
+export function updatePill(pill) {
+  const p = state.pills.get(pill.id);
+  if (!p) return;
+  Object.assign(p, pill);
+  const row = document.querySelector(`.pill-row[data-pill-id="${pill.id}"]`);
+  if (!row) return;
+  const statusEl = row.querySelector('.pill-status');
+  if (statusEl) {
+    statusEl.textContent = pill.statusText || (pill.working ? '' : 'idle');
+    statusEl.className = `pill-status text-xs truncate ${pill.working ? 'text-emerald-400' : 'text-slate-600'}`;
+  }
+  const animEl = row.querySelector('.pill-anim');
+  if (animEl) {
+    if (pill.working) {
+      if (!animEl.children.length) { animEl._stop = startBounce(animEl); }
+    } else {
+      if (animEl._stop) { animEl._stop(); animEl._stop = null; }
+      animEl.innerHTML = '<span class="text-[11px] text-slate-600 dormant">z<sup>z</sup>Z</span>';
+    }
+  }
+}
+
+export function removePill(id) {
+  state.pills.delete(id);
+  document.querySelector(`.pill-row[data-pill-id="${id}"]`)?.remove();
+  // If this pill's log panel is open, close it
+  if (state.activePill === id) closePillLog();
+  regroupSessions();
+}
+
+export function appendPillLog(id, entry) {
+  const p = state.pills.get(id);
+  if (!p) return;
+  p.logs.push(entry);
+  if (p.logs.length > 200) p.logs.splice(0, p.logs.length - 200);
+  // If log panel is open for this pill, append line
+  if (state.activePill === id) appendLogLine(entry);
+}
+
+function pillColors() {
+  const light = document.documentElement.classList.contains('light');
+  return { bg: light ? '#e0fcd7' : '#2a4a30', accent: light ? '#4a8c3f' : '#54ab63' };
+}
+
+const PILL_CLOCK_SVG = `<svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></svg>`;
+const PILL_BOT_SVG = `<svg class="w-2.5 h-2.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2v4m-3 4h6m-8 0a2 2 0 0 0-2 2v4a2 2 0 0 0 2 2h8a2 2 0 0 0 2-2v-4a2 2 0 0 0-2-2H7z"/><circle cx="9" cy="14" r="1" fill="currentColor" stroke="none"/><circle cx="15" cy="14" r="1" fill="currentColor" stroke="none"/></svg>`;
+
+function formatElapsed(startedAt) {
+  const sec = Math.floor((Date.now() - startedAt) / 1000);
+  if (sec < 0) return '0s';
+  const d = Math.floor(sec / 86400), h = Math.floor((sec % 86400) / 3600);
+  const m = Math.floor((sec % 3600) / 60), s = sec % 60;
+  if (d >= 2) return `${d}d ${h}h`;
+  if (m >= 91) return `${h}h ${m % 60}m`;
+  if (m > 0) return `${m}m ${s}s`;
+  return `${s}s`;
+}
+
+function buildPillRow(pill) {
+  const { bg, accent } = pillColors();
+  const row = document.createElement('div');
+  row.className = 'pill-row group flex items-center gap-2 px-2.5 py-2 cursor-pointer transition-colors select-none';
+  row.dataset.pillId = pill.id;
+  const elapsed = pill.startedAt ? formatElapsed(pill.startedAt) : '';
+  row.innerHTML = `
+    <div class="session-icon w-8 h-8 rounded-full flex items-center justify-center flex-shrink-0 overflow-hidden pointer-events-none" style="background:${bg}">
+      <div class="relative w-full h-full flex items-center justify-center">
+        <div class="absolute" style="top:2px;left:3px;color:${accent}">${PILL_CLOCK_SVG}</div>
+        <div class="absolute bottom-0 right-0 w-3.5 h-3.5 rounded-full flex items-center justify-center border border-slate-900" style="background:${accent};color:#fff">${PILL_BOT_SVG}</div>
+      </div>
+    </div>
+    <div class="flex-1 min-w-0">
+      <div class="flex items-baseline gap-2">
+        <span class="flex-1 font-semibold text-[13px] text-slate-300 truncate">${esc(pill.title)}</span>
+        <span class="pill-elapsed text-[11px] text-slate-600 flex-shrink-0">${elapsed}</span>
+      </div>
+      <div class="flex items-center gap-1.5 mt-0.5">
+        <span class="pill-anim flex-shrink-0 leading-none"></span>
+        <span class="pill-status text-xs truncate ${pill.working ? 'text-emerald-400' : 'text-slate-600'}">${pill.statusText || (pill.working ? '' : 'idle')}</span>
+      </div>
+    </div>`;
+
+  // Init animation state
+  const animEl = row.querySelector('.pill-anim');
+  if (pill.working) {
+    animEl._stop = startBounce(animEl);
+  } else {
+    animEl.innerHTML = '<span class="text-[11px] text-slate-600 dormant">z<sup>z</sup>Z</span>';
+  }
+
+  row.addEventListener('click', () => selectPill(pill.id));
+  return row;
+}
+
+function selectPill(id) {
+  // Deselect any active terminal
+  const prev = document.querySelector('.group.active-session');
+  if (prev) prev.classList.remove('active-session');
+  document.querySelector('.term-wrap.active')?.classList.remove('active');
+
+  // Highlight pill row
+  document.querySelectorAll('.pill-row').forEach(r => r.classList.remove('active-session'));
+  document.querySelector(`.pill-row[data-pill-id="${id}"]`)?.classList.add('active-session');
+
+  state.active = null;
+  openPillLog(id);
+}
+
+function openPillLog(id) {
+  const pill = state.pills.get(id);
+  if (!pill) return;
+  state.activePill = id;
+
+  // Request full logs from server
+  send({ type: 'pill.getLogs', id });
+
+  // Create or show log panel
+  let panel = document.getElementById('pill-log-panel');
+  if (!panel) {
+    panel = document.createElement('div');
+    panel.id = 'pill-log-panel';
+    panel.className = 'term-wrap active';
+    panel.innerHTML = `
+      <div class="flex flex-col h-full bg-slate-900 rounded-lg overflow-hidden">
+        <div class="pill-log-header flex items-center gap-2 px-4 py-2 border-b border-slate-700/50">
+          <span class="pill-log-title font-semibold text-sm text-slate-300"></span>
+          <span class="flex-1"></span>
+          <button class="pill-log-clear text-[11px] text-slate-600 hover:text-slate-400 transition-colors">Clear</button>
+        </div>
+        <div class="pill-log-body flex-1 overflow-y-auto p-4 text-xs leading-relaxed tmx-scroll"></div>
+      </div>`;
+    document.getElementById('terminals').appendChild(panel);
+    panel.querySelector('.pill-log-clear').addEventListener('click', () => {
+      panel.querySelector('.pill-log-body').innerHTML = '';
+    });
+  } else {
+    panel.classList.add('active');
+  }
+
+  panel.querySelector('.pill-log-title').textContent = pill.title;
+  const body = panel.querySelector('.pill-log-body');
+  body.innerHTML = '';
+  for (const entry of pill.logs) appendLogLine(entry);
+
+  // Hide empty state
+  document.getElementById('empty').style.display = 'none';
+  document.getElementById('terminals').style.pointerEvents = '';
+}
+
+export function setPillLogs(id, logs) {
+  const pill = state.pills.get(id);
+  if (!pill) return;
+  pill.logs = logs;
+  if (state.activePill !== id) return;
+  const body = document.querySelector('#pill-log-panel .pill-log-body');
+  if (!body) return;
+  body.innerHTML = '';
+  for (const entry of logs) appendLogLine(entry);
+}
+
+function appendLogLine(entry) {
+  const body = document.querySelector('#pill-log-panel .pill-log-body');
+  if (!body) return;
+  body.querySelectorAll('.pill-log-live').forEach(el => el.classList.remove('pill-log-live'));
+  const line = document.createElement('div');
+  const time = new Date(entry.ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+  const t = entry.text;
+
+  // Categorize log entries for visual treatment
+  let color = 'text-slate-400';
+  let icon = '';
+  let content = esc(t);
+  if (/^Started with/.test(t)) {
+    color = 'text-emerald-400';
+    icon = '<span class="text-emerald-500">&#9654;</span>';
+  } else if (/^Routed /.test(t)) {
+    color = 'text-indigo-400';
+    icon = '<span class="text-indigo-500">&#8594;</span>';
+  } else if (/^Notify:/.test(t)) {
+    color = 'text-amber-300';
+    icon = '<span class="text-amber-500">&#9679;</span>';
+    content = '<strong class="text-amber-300">Notify:</strong> ' + miniMarkdown(t.replace(/^Notify:\s*/, ''));
+  } else if (/^Consulting /.test(t)) {
+    color = 'text-slate-500';
+    icon = '<span class="text-slate-600">&#8230;</span>';
+  } else if (/→ working$/.test(t)) {
+    color = 'text-blue-400';
+    icon = '<span class="pill-log-icon text-blue-500">&#9679;</span>';
+  } else if (/→ idle$/.test(t)) {
+    color = 'text-slate-500';
+    icon = '<span class="text-slate-600">&#9675;</span>';
+  } else if (/^Completed$/.test(t)) {
+    color = 'text-emerald-400';
+    icon = '<span class="text-emerald-500">&#10003;</span>';
+  } else if (/^Stopped$/.test(t)) {
+    color = 'text-slate-500';
+    icon = '<span class="text-slate-600">&#9632;</span>';
+  } else if (/^Paused/.test(t)) {
+    color = 'text-amber-400';
+    icon = '<span class="text-amber-500">&#9646;&#9646;</span>';
+  }
+
+  line.className = 'flex gap-3 py-1 items-start';
+  if (/→ working$/.test(t)) line.classList.add('pill-log-live');
+  line.innerHTML = `<span class="text-slate-600 flex-shrink-0 tabular-nums">${time}</span><span class="w-4 flex-shrink-0 text-center">${icon}</span><span class="${color} leading-relaxed">${content}</span>`;
+  body.appendChild(line);
+  body.scrollTop = body.scrollHeight;
+}
+
+const pillLogStyle = document.createElement('style');
+pillLogStyle.textContent = `
+  @keyframes pill-log-pulse {
+    0%, 100% { opacity: 1; transform: scale(1); }
+    50% { opacity: 0.45; transform: scale(0.9); }
+  }
+  .pill-log-live .pill-log-icon {
+    display: inline-block;
+    animation: pill-log-pulse 1s ease-in-out infinite;
+  }
+`;
+document.head.appendChild(pillLogStyle);
+
+export function closePillLog() {
+  state.activePill = null;
+  const panel = document.getElementById('pill-log-panel');
+  if (panel) panel.classList.remove('active');
+}
+
 export { openMenu, closeMenu, setStatus, updateMuteIndicator, positionMenu, PROJECT_COLORS };
+
+// Clear active terminal scrollback — Cmd+K (macOS), Ctrl+Shift+K (Windows/Linux)
+const clearTerminal = () => {
+  const entry = state.active && state.terms.get(state.active);
+  if (entry) entry.term.clear();
+};
+registerHotkey('core', 'Cmd+K', clearTerminal);
+registerHotkey('core', 'Ctrl+Shift+K', clearTerminal);

@@ -1,79 +1,78 @@
-# CliDeck
+<p align="center">
+  <img src="public/img/clideck-logo-icon.png" width="64" alt="clideck logo">
+</p>
 
-One screen for all your AI coding agents.
+<h1 align="center">clideck</h1>
 
-[Documentation](https://docs.clideck.dev/) | [Video Demo](https://youtu.be/hICrtjGAeDk) | [Website](https://clideck.dev/)
+<p align="center">
+  one screen for AI coding agents.
+  <br><br>
+  <a href="https://clideck.dev">Website</a> · <a href="https://docs.clideck.dev">Docs</a> · <a href="https://youtu.be/hICrtjGAeDk">Demo</a> · <a href="https://www.npmjs.com/package/clideck"><img src="https://img.shields.io/npm/v/clideck" alt="npm version"></a>
+</p>
 
-![CliDeck dashboard](assets/clideck-themes.jpg)
+<!-- TODO: Replace with a ~10 second GIF showing: open clideck,
+     sidebar with multiple agents across projects, click between them,
+     one working one idle. No narration needed. -->
 
-You're running Claude Code, Codex, Gemini CLI, and OpenCode in separate terminals. You switch between them constantly, forget which one finished, and lose sessions when you close the lid. CliDeck puts them all on one screen with live status, so you always know what's happening.
+<p align="center">
+  <img src="assets/clideck-themes.jpg" width="720" alt="clideck dashboard">
+</p>
 
-CliDeck is a local dashboard that runs all your CLI agents in one browser tab. It tracks which agents are working, which are idle, and notifies you when they need attention. Everything runs on your machine — nothing leaves localhost.
-Switch between agents as easily as switching between chats.
+clideck is a local app for running multiple AI coding agents without juggling terminals. Claude Code, Codex, Gemini CLI, and OpenCode all live in one browser window with a chat-style sidebar, live status, message previews, session resume, and projects to keep things organized. an autopilot routes work between agents automatically, and an E2E encrypted mobile relay gives full control over all agents from a phone.
 
-## Quick Start
+the main problem with using multiple agents is not starting them. it is managing them. terminals pile up, finished work gets missed, good sessions disappear after a restart. clideck does not sit in the middle rewriting prompts or output - it only watches lightweight status signals (OpenTelemetry) so it can tell which agent is working, which is idle, and which is waiting. everything runs locally, no data leaves your machine.
+
+## Why this exists
+
+Terminal multiplexers are great at panes. clideck is about conversations.
+
+A pane grid is flat. agent work usually is not. projects, roles, previews, timestamps, notifications, resume, and sometimes a bit of routing between specialists all fit more naturally into a chat app layout. it also maps naturally to mobile, so the same mental model works on desktop and phone.
+
+## Quick start
 
 ```bash
 npm install -g clideck
 clideck
 ```
 
-Open [http://localhost:4000](http://localhost:4000). Click **+**, pick an agent, start working.
+Open [localhost:4000](http://localhost:4000). Click **+**, pick an agent, start working.
 
-Or run directly without installing:
+Or just run it once with `npx clideck`. Works on macOS and Windows. Node 18+. Linux: untested - if you try it, [open an issue](https://github.com/rustykuntz/clideck/issues).
 
-```bash
-npx clideck
-```
+## What makes it useful
 
-## What You Get
+**Live status** - see which agent is working and which is waiting. Status detection for Claude Code, Codex, Gemini CLI, and OpenCode.
 
-- **Live status** — see which agents are working and which are done, without checking each terminal
-- **Session resume** — close CliDeck, reopen it tomorrow, resume your Claude Code conversation where you left off
-- **Notifications** — browser and sound alerts the moment an agent finishes or needs input
-- **Message previews** — latest output from each agent, right in the sidebar
-- **Projects** — group sessions by project with drag-and-drop
-- **Search** — find any session by name or scroll back through transcript content
-- **Prompt Library** — save reusable prompts and paste them into any terminal by typing `//`
-- **Plugins** — ships with Voice Input and Trim Clip. Build your own with the plugin API
-- **15 themes** — dark and light built-in, plus custom theme support
-- **Zero interference** — native PTY terminals, your keystrokes go straight to the agent, nothing in between
+**Session resume** - close the lid, reopen tomorrow, pick up where things left off. each agent's session ID is captured automatically.
 
-## Supported Agents
+**Roles** - give agents reusable identities like programmer, reviewer, or product manager. prompts are injected automatically when a session starts.
 
-CliDeck auto-detects whether each agent is working or idle:
+**Autopilot** - enable autopilot on a project, walk away. it watches for one agent to finish, hands the output to the next one, and keeps going until the work is done or blocked. this is the part that makes sleep possible. routes content verbatim, no rewriting or summarizing. fingerprints each output and tracks handoff history to guard against repeat loops. ~50 output tokens per routing decision. supports Anthropic, OpenAI, Google, Groq, xAI, Mistral, OpenRouter, Cerebras.
 
-| Agent | Status detection | Setup |
-|-------|-----------------|-------|
-| **Claude Code** | Automatic | Nothing to configure |
-| **Codex** | Automatic | One-click setup in CliDeck |
-| **Gemini CLI** | Automatic | One-click setup in CliDeck |
-| **OpenCode** | Via plugin bridge | One-click setup in CliDeck |
-| **Shell** | I/O activity only | None |
+<p align="center">
+  <img src="assets/autopilot.gif" width="720" alt="Autopilot routing work between agents">
+</p>
 
-Claude Code works out of the box. Other agents need a one-time configuration that CliDeck walks you through.
+**Mobile remote** - the agents keep running on the local machine. status, prompts, history, and replies stay available from a phone while away. E2E encrypted, no account needed.
 
-## How It Works
+**Native terminals** - each session opens into its real terminal. keys go straight to the agent, nothing sits in the middle.
 
-Each agent runs in a native terminal (PTY). CliDeck receives lightweight status signals from agents via OpenTelemetry — it sees *that* an agent is working, not *what* it's working on. Your prompts and responses are never read or stored by CliDeck.
+## Supported agents
 
-OpenTelemetry runs locally between the agent and CliDeck. No data is collected, transmitted, or stored outside your machine.
+Claude Code, Codex, Gemini CLI, OpenCode, Shell, and any other terminal tool.
 
-## Prompt Library
+## Also
 
-Save prompts you use often and paste them into any terminal session instantly. Open the Prompts panel from the sidebar, click **+** to add a prompt with a name and text.
+- **Projects** - group sessions, drag and drop
+- **Prompt library** - save reusable prompts, type `//` to paste
+- **Search** - find sessions or scroll through transcripts
+- **Plugins** - server + client API. ships with Voice Input, Trim Clip, and Autopilot. build your own
+- **15 themes** - dark, light, or make your own
+- **Notifications** - browser + sound alerts when agents finish
 
-To use a prompt, type `//` in any terminal — an autocomplete dropdown appears. Type a few letters to filter, arrow keys to navigate, Enter to paste. The prompt text is sent directly to the active terminal.
+## Docs
 
-## Platform Support
-
-Tested on **macOS** and **Windows**. Works in any modern browser. Linux: untested — if you try it, open an issue and let me know.
-
-## Documentation
-
-Full setup guides, agent configuration, and plugin development:
-
-**[Documentation](https://docs.clideck.dev/)**
+Guides, agent setup, plugin development: **[docs.clideck.dev](https://docs.clideck.dev)**
 
 ## Acknowledgments
 
@@ -81,4 +80,4 @@ Built with [xterm.js](https://xtermjs.org/).
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+MIT - see [LICENSE](LICENSE).

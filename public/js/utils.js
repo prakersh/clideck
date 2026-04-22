@@ -17,6 +17,15 @@ export function esc(s) {
   return s.replace(/[&<>"']/g, c => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[c]));
 }
 
+export function miniMarkdown(text) {
+  return esc(text)
+    .replace(/\*\*(.+?)\*\*/g, '<strong class="text-slate-200 font-semibold">$1</strong>')
+    .replace(/`(.+?)`/g, '<code class="px-1 py-0.5 rounded bg-slate-700/60 text-slate-300 text-[11px]">$1</code>')
+    .replace(/^[-•]\s+(.+)$/gm, '<li class="ml-3">$1</li>')
+    .replace(/(<li.*<\/li>\n?)+/g, '<ul class="list-disc pl-2 space-y-0.5">$&</ul>')
+    .replace(/\n/g, '<br>');
+}
+
 export function debounce(fn, ms) {
   let t;
   return (...a) => { clearTimeout(t); t = setTimeout(() => fn(...a), ms); };
@@ -29,6 +38,7 @@ const ICON_VARIANTS = {
   '/img/codex.png': { dark: '/img/codex-dark.png', light: '/img/codex-light.png' },
   '/img/gemini.png': { all: '/img/gemini-all.png' },
   '/img/opencode.png': { all: '/img/opencode-all.png' },
+  '/img/clideck-agent.svg': { dark: '/img/clideck-agent-dark.svg', light: '/img/clideck-agent-light.svg' },
 };
 
 export function resolveIconPath(icon) {

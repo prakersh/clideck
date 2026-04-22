@@ -97,6 +97,23 @@ const CSP = [
   "base-uri 'none'",
 ].join('; ');
 
+const geminiMenuPoll = new Map();
+
+function startGeminiMenuPoll(id) {
+  const prev = geminiMenuPoll.get(id);
+  if (prev) clearInterval(prev);
+  const started = Date.now();
+  const timer = setInterval(() => {
+    if (Date.now() - started > 3000) {
+      clearInterval(timer);
+      geminiMenuPoll.delete(id);
+      return;
+    }
+    sessions.broadcast({ type: 'terminal.capture', id });
+  }, 500);
+  geminiMenuPoll.set(id, timer);
+}
+
 function requestPath(req) {
   return (req.url || '/').split('?')[0] || '/';
 }
@@ -221,6 +238,83 @@ async function handleIngest(req, res, path) {
       req.body = null;
     }
     telemetry.handleLogs(req, res);
+    return;
+  }
+
+  // Codex notify hook — deterministic turn-complete signal
+  if (req.method === 'POST' && path === '/hook/codex/stop') {
+    try {
+      const payload = await readJsonBody(req, 1e5) || {};
+      const clideckId = payload.clideck_id;
+      const threadId = payload['thread-id'] || payload.session_id;
+      const allSessions = sessions.getSessions();
+      if (clideckId && allSessions.has(clideckId)) {
+        require('./telemetry-receiver').armCodexStop(clideckId);
+      } else if (threadId) {
+        for (const [id, s] of allSessions) {
+          if (s.sessionToken === threadId) {
+            require('./telemetry-receiver').armCodexStop(id);
+            break;
+          }
+        }
+      }
+    } catch {}
+    res.writeHead(200, { 'Content-Type': 'application/json' }).end('{}');
+    return;
+  }
+
+  // Claude Code hook — deterministic start/stop/idle/menu signals
+  if (req.method === 'POST' && path.startsWith('/hook/claude/')) {
+    try {
+      const payload = await readJsonBody(req, 1e5) || {};
+      const route = path.slice('/hook/claude/'.length);
+      const sessionId = payload.session_id;
+      const allSessions = sessions.getSessions();
+      const clideckId = payload.clideck_id && allSessions.has(payload.clideck_id)
+        ? payload.clideck_id
+        : sessionId
+          ? [...allSessions].find(([, s]) => s.sessionToken === sessionId)?.[0]
+          : null;
+      if (clideckId) {
+        const sess = allSessions.get(clideckId);
+        if (route === 'start') {
+          sessions.broadcast({ type: 'session.status', id: clideckId, working: true, source: 'hook' });
+        } else if (route === 'stop' || route === 'idle') {
+          sessions.broadcast({ type: 'session.status', id: clideckId, working: false, source: 'hook' });
+          if (route === 'stop' && sess && !sess.working) {
+            setTimeout(() => sessions.broadcast({ type: 'terminal.capture', id: clideckId }), 500);
+          }
+        } else if (route === 'menu') {
+          const menuVersion = sess ? ((sess._menuVersion || 0) + 1) : 1;
+          if (sess) sess._menuVersion = menuVersion;
+          setTimeout(() => sessions.broadcast({ type: 'terminal.capture', id: clideckId, menuVersion }), 500);
+        }
+      }
+    } catch {}
+    res.writeHead(200, { 'Content-Type': 'application/json' }).end('{}');
+    return;
+  }
+
+  // Gemini hook — deterministic start/stop/menu signals
+  if (req.method === 'POST' && path.startsWith('/hook/gemini/')) {
+    try {
+      const payload = await readJsonBody(req, 1e5) || {};
+      const route = path.slice('/hook/gemini/'.length);
+      const allSessions = sessions.getSessions();
+      const clideckId = payload.clideck_id && allSessions.has(payload.clideck_id)
+        ? payload.clideck_id
+        : [...allSessions].find(([, s]) => s.sessionToken === payload.session_id)?.[0];
+      if (clideckId) {
+        const s = allSessions.get(clideckId);
+        if (s && payload.session_id && !s.sessionToken) s.sessionToken = payload.session_id;
+        if (route === 'menu') {
+          startGeminiMenuPoll(clideckId);
+        } else {
+          sessions.broadcast({ type: 'session.status', id: clideckId, working: route === 'start', source: 'hook' });
+        }
+      }
+    } catch {}
+    res.writeHead(200, { 'Content-Type': 'application/json' }).end('{}');
     return;
   }
 
@@ -386,5 +480,3 @@ server.listen(PORT, HOST, () => {
 \x1b[38;5;245m  ▸ Stop with \x1b[38;5;252mCtrl+C\x1b[38;5;245m · Restart anytime with \x1b[38;5;252mclideck\x1b[0m
 `);
 });
-
-}); // checkSelfUpdate

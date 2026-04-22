@@ -24,15 +24,69 @@ document.getElementById('settings-nav').addEventListener('click', (e) => {
   if (btn) switchCategory(btn.dataset.cat);
 });
 
+function captureSettingsFocus() {
+  const active = document.activeElement;
+  if (!active || !(active instanceof HTMLElement)) return null;
+  if (!active.closest('#panel-settings')) return null;
+
+  const snapshot = {
+    id: active.id || null,
+    selector: null,
+    cardIdx: null,
+    selectionStart: null,
+    selectionEnd: null,
+  };
+
+  const card = active.closest('.agent-card');
+  if (card) {
+    snapshot.cardIdx = card.dataset.idx || null;
+    for (const cls of ['agent-name', 'agent-command', 'agent-enabled', 'agent-is-agent', 'agent-can-resume', 'agent-resume-cmd']) {
+      if (active.classList.contains(cls)) {
+        snapshot.selector = `.${cls}`;
+        break;
+      }
+    }
+  }
+
+  if (typeof active.selectionStart === 'number' && typeof active.selectionEnd === 'number') {
+    snapshot.selectionStart = active.selectionStart;
+    snapshot.selectionEnd = active.selectionEnd;
+  }
+
+  return snapshot;
+}
+
+function restoreSettingsFocus(snapshot) {
+  if (!snapshot) return;
+
+  let target = null;
+  if (snapshot.id) target = document.getElementById(snapshot.id);
+  if (!target && snapshot.cardIdx != null && snapshot.selector) {
+    target = document.querySelector(`.agent-card[data-idx="${snapshot.cardIdx}"] ${snapshot.selector}`);
+  }
+  if (!(target instanceof HTMLElement)) return;
+
+  target.focus({ preventScroll: true });
+  if (
+    typeof snapshot.selectionStart === 'number' &&
+    typeof snapshot.selectionEnd === 'number' &&
+    typeof target.setSelectionRange === 'function'
+  ) {
+    target.setSelectionRange(snapshot.selectionStart, snapshot.selectionEnd);
+  }
+}
+
 // ── Render all ──
 
 export function renderSettings() {
+  const focusSnapshot = captureSettingsFocus();
   document.getElementById('cfg-default-path').value = state.cfg.defaultPath || '';
   document.getElementById('cfg-confirm-close').checked = state.cfg.confirmClose !== false;
   renderAgentList();
   renderThemeSection();
   renderNotifications();
   updateVersionFooter();
+  restoreSettingsFocus(focusSnapshot);
 }
 
 export function updateVersionFooter() {
@@ -106,43 +160,35 @@ function telemetryPreset(cmd) {
   return findPresetForCommand(cmd.command, state.presets || [], cmd.presetId);
 }
 
+function presetForCommand(existing, command) {
+  const presets = state.presets || [];
+  if (existing?.presetId) {
+    const byId = presets.find(p => p.presetId === existing.presetId);
+    if (byId) return byId;
+  }
+  const bin = binName(command || existing?.command || '');
+  return presets.find(p => binName(p.command) === bin) || null;
+}
+
+function telemetryEnabledForCommand(existing, command) {
+  const preset = presetForCommand(existing, command);
+  if (preset?.telemetryEnabled === true) return true;
+  return !!existing?.telemetryEnabled;
+}
+
 function integrationSection(c) {
   const preset = telemetryPreset(c);
   if (!preset) return '';
-  const isClaude = preset.presetId === 'claude-code';
-  const isBridge = !!preset.bridge;
-  if (!preset.telemetryEnv && !isBridge) return '';
-
-  const enabled = isClaude || !!c.telemetryEnabled;
-  const title = 'CliDeck integration';
-  const subtitle = '(live status &amp; resume)';
-
-  if (isClaude) {
-    return `
-    <div class="mt-3 pt-3 border-t border-slate-700/50">
-      <div class="flex items-center gap-2 text-sm text-slate-300">
-        <span style="width:8px;height:8px;border-radius:50%;background:#34d399;display:inline-block"></span>
-        ${title} <span class="text-xs text-slate-500">${subtitle}</span>
-      </div>
-      <div class="mt-1 text-[11px] text-slate-500">Built-in</div>
-    </div>`;
-  }
-
-  const detail = isBridge ? 'Bridge plugin' : esc(preset.telemetryConfigPath || '');
-  const toggleBg = enabled ? '#3b82f6' : '#475569';
-  const knobX = enabled ? '18' : '2';
-
+  if (!preset.telemetryAutoSetup && !preset.bridge) return '';
+  const configured = !!c.telemetryStatus?.ok;
+  const detail = preset.versionOk === false
+    ? `<span class="text-rose-400/80">Update required</span> &mdash; need ${esc(preset.minVersion)}+ (found ${esc(preset.version || 'unknown')})`
+    : configured
+      ? `<span class="text-emerald-400/80">Configured</span> &mdash; ${esc(preset.telemetryConfigPath || '')}`
+      : `<span class="text-amber-400/80">${esc(c.telemetryStatus?.error || 'Needs setup')}</span> &mdash; ${esc(preset.telemetryConfigPath || '')}`;
   return `
     <div class="mt-3 pt-3 border-t border-slate-700/50">
-      <label class="flex items-center justify-between text-sm text-slate-300 cursor-pointer select-none">
-        <span>${title} <span class="text-xs text-slate-500">${subtitle}</span></span>
-        <span style="position:relative;display:inline-block;width:36px;height:20px">
-          <input type="checkbox" ${enabled ? 'checked' : ''} class="agent-telemetry-toggle" data-preset="${esc(preset.presetId)}" style="position:absolute;opacity:0;width:100%;height:100%;cursor:pointer;margin:0;z-index:1">
-          <span style="position:absolute;inset:0;border-radius:10px;background:${toggleBg};transition:background .2s"></span>
-          <span style="position:absolute;top:2px;left:${knobX}px;width:16px;height:16px;border-radius:50%;background:#fff;transition:left .2s"></span>
-        </span>
-      </label>
-      <div class="mt-1 text-[11px] text-slate-500" ${!isBridge ? 'style="font-family:monospace"' : ''}>${detail}</div>
+      <div class="text-[11px] text-slate-500">${detail}</div>
     </div>`;
 }
 
@@ -243,8 +289,8 @@ function openPresetMenu(anchorEl) {
         enabled: true, defaultPath: '', isAgent: p.isAgent, canResume: p.canResume,
         resumeCommand: p.resumeCommand, sessionIdPattern: p.sessionIdPattern,
         outputMarker: p.outputMarker || null,
-        telemetryEnabled: p.presetId === 'claude-code',
-        telemetryStatus: p.presetId === 'claude-code' ? { ok: true } : null,
+        telemetryEnabled: telemetryEnabledForCommand({ presetId: p.presetId, command: p.command }, p.command),
+        telemetryStatus: null,
         bridge: p.bridge,
         presetId: p.presetId, autoDetected: false,
       });
@@ -297,10 +343,27 @@ agentList.addEventListener('change', (e) => {
     const card = e.target.closest('.agent-card');
     card.querySelector('.agent-resume-fields').classList.toggle('hidden', !e.target.checked);
   }
-  if (e.target.classList.contains('agent-telemetry-toggle')) {
-    const presetId = e.target.dataset.preset;
-    send({ type: 'telemetry.configure', presetId, enable: e.target.checked });
-    return; // config broadcast from server will re-render
+  // When enabling an agent that needs setup, trigger auto-setup
+  if (e.target.classList.contains('agent-enabled') && e.target.checked) {
+    const idx = +e.target.closest('.agent-card').dataset.idx;
+    const cmd = state.cfg.commands[idx];
+    const preset = telemetryPreset(cmd);
+    if (preset?.telemetryAutoSetup && !cmd.telemetryEnabled) {
+      send({ type: 'telemetry.autosetup', presetId: preset.presetId });
+      return; // config broadcast from server will re-render with enabled + telemetryEnabled
+    }
+  }
+  // When disabling an agent that has setup, remove patches only if no other commands of the same agent are enabled
+  if (e.target.classList.contains('agent-enabled') && !e.target.checked) {
+    const idx = +e.target.closest('.agent-card').dataset.idx;
+    const cmd = state.cfg.commands[idx];
+    const preset = telemetryPreset(cmd);
+    if (preset && cmd.telemetryEnabled) {
+      const othersEnabled = state.cfg.commands.some((c, i) => i !== idx && c.enabled && telemetryPreset(c)?.presetId === preset.presetId);
+      if (!othersEnabled) {
+        send({ type: 'telemetry.configure', presetId: preset.presetId, enable: false });
+      }
+    }
   }
   saveConfig();
 });
@@ -395,7 +458,7 @@ function renderThemeSection() {
 function renderNotifications() {
   const enabled = !!state.cfg.notifyIdle;
   document.getElementById('cfg-notify-idle').checked = enabled;
-  document.getElementById('cfg-notify-min-work').value = state.cfg.notifyMinWork || 10;
+  document.getElementById('cfg-notify-min-work').value = state.cfg.notifyMinWork ?? 0;
 
   const permStatus = document.getElementById('notify-permission-status');
   if (enabled && 'Notification' in window) {
@@ -466,7 +529,7 @@ function saveConfig() {
       sessionIdPattern: existing.sessionIdPattern || null,
       outputMarker: existing.outputMarker || null,
       presetId: existing.presetId || null,
-      telemetryEnabled: isClaude ? true : (existing.telemetryEnabled || false),
+      telemetryEnabled: isClaude ? true : telemetryEnabledForCommand(existing, command),
       telemetryStatus: isClaude ? { ok: true } : (existing.telemetryStatus || null),
       bridge: existing.bridge,
       autoDetected: existing.autoDetected,
@@ -480,7 +543,7 @@ function saveConfig() {
   state.cfg.defaultPath = document.getElementById('cfg-default-path').value.trim();
   state.cfg.confirmClose = document.getElementById('cfg-confirm-close').checked;
   state.cfg.notifyIdle = document.getElementById('cfg-notify-idle').checked;
-  state.cfg.notifyMinWork = parseInt(document.getElementById('cfg-notify-min-work').value, 10) || 10;
+  state.cfg.notifyMinWork = parseInt(document.getElementById('cfg-notify-min-work').value, 10) || 0;
   state.cfg.notifySoundEnabled = document.getElementById('cfg-notify-sound').checked;
   state.cfg.notifySound = document.getElementById('cfg-notify-sound-pick').value;
   // Preserve fields not managed by this form

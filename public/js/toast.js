@@ -1,3 +1,5 @@
+import { esc, miniMarkdown } from './utils.js';
+
 const ICONS = {
   info:    '<path stroke-linecap="round" stroke-linejoin="round" d="M11.25 11.25l.041-.02a.75.75 0 011.063.852l-.708 2.836a.75.75 0 001.063.853l.041-.021M21 12a9 9 0 11-18 0 9 9 0 0118 0zm-9-3.75h.008v.008H12V8.25z"/>',
   success: '<path stroke-linecap="round" stroke-linejoin="round" d="M9 12.75L11.25 15 15 9.75M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/>',
@@ -20,12 +22,13 @@ function getContainer() {
 }
 
 /**
- * @param {string} message  — plain text or HTML (if html option is true)
- * @param {{ type?: string, duration?: number, id?: string, html?: boolean }} opts
+ * @param {string} message  — plain text, markdown (if markdown option), or raw HTML (if html option)
+ * @param {{ type?: string, duration?: number, id?: string, html?: boolean, markdown?: boolean, title?: string, iconHtml?: string }} opts
  * @returns {{ dismiss(): void }}
  */
 export function showToast(message, opts = {}) {
-  const { type = 'info', duration = 3000, id, html = false } = opts;
+  const { type = 'info', duration = 3000, id, html = false, markdown = false, title, iconHtml = '' } = opts;
+  const sticky = duration === 0;
 
   if (id) document.getElementById(`tmx-toast-${id}`)?.remove();
 
@@ -33,14 +36,23 @@ export function showToast(message, opts = {}) {
   if (id) el.id = `tmx-toast-${id}`;
   el.className = 'w-full max-w-[360px] bg-slate-800/95 backdrop-blur-sm border border-slate-700/60 rounded-xl tmx-toast';
   el.style.cssText = 'opacity:0;transform:translateY(12px);transition:opacity 0.3s ease,transform 0.3s ease';
+
+  const body = markdown ? miniMarkdown(message) : html ? message : esc(message);
+  const titleHtml = title ? `<div class="text-[11px] font-semibold text-slate-400 uppercase tracking-wider mb-1">${esc(title)}</div>` : '';
+  const iconBlock = iconHtml
+    ? `<span class="w-5 h-5 flex-shrink-0 ${ICON_COLORS[type] || ICON_COLORS.info} mt-0.5">${iconHtml}</span>`
+    : `<svg class="w-5 h-5 flex-shrink-0 ${ICON_COLORS[type] || ICON_COLORS.info} mt-0.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">${ICONS[type] || ICONS.info}</svg>`;
+  const closeX = `<button class="toast-close flex-shrink-0 w-6 h-6 flex items-center justify-center rounded-md text-slate-500 hover:text-slate-300 hover:bg-slate-700/50 transition-colors">
+      <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path d="M18 6L6 18M6 6l12 12"/></svg>
+    </button>`;
+  const dismissBtn = `<div class="flex justify-end px-4 pb-3"><button class="toast-close px-3 py-1 rounded-md text-[11px] font-medium text-slate-400 hover:text-slate-200 hover:bg-slate-700/50 border border-slate-700/50 transition-colors">Dismiss</button></div>`;
+
   el.innerHTML = `
     <div class="flex items-start gap-2.5 px-4 py-3.5">
-      <svg class="w-5 h-5 flex-shrink-0 ${ICON_COLORS[type] || ICON_COLORS.info} mt-0.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">${ICONS[type] || ICONS.info}</svg>
-      <p class="flex-1 text-xs text-slate-300 leading-relaxed">${html ? message : esc(message)}</p>
-      <button class="flex-shrink-0 w-6 h-6 flex items-center justify-center rounded-md text-slate-500 hover:text-slate-300 hover:bg-slate-700/50 transition-colors">
-        <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path d="M18 6L6 18M6 6l12 12"/></svg>
-      </button>
-    </div>`;
+      ${iconBlock}
+      <div class="flex-1 min-w-0 text-xs text-slate-300 leading-relaxed">${titleHtml}${body}</div>
+      ${sticky ? '' : closeX}
+    </div>${sticky ? dismissBtn : ''}`;
 
   const dismiss = () => {
     el.style.opacity = '0';
@@ -48,15 +60,9 @@ export function showToast(message, opts = {}) {
     setTimeout(() => el.remove(), 300);
   };
 
-  el.querySelector('button').onclick = dismiss;
+  el.querySelectorAll('.toast-close').forEach(b => b.onclick = dismiss);
   getContainer().appendChild(el);
   requestAnimationFrame(() => { el.style.opacity = '1'; el.style.transform = 'translateY(0)'; });
   if (duration > 0) setTimeout(dismiss, duration);
   return { dismiss };
-}
-
-function esc(s) {
-  const d = document.createElement('div');
-  d.textContent = s;
-  return d.innerHTML;
 }

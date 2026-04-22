@@ -1,95 +1,86 @@
-const { existsSync, readdirSync, readFileSync } = require('fs');
+const { appendFile, writeFileSync, mkdirSync, existsSync, readdirSync, readFileSync, unlinkSync } = require('fs');
 const { join, basename } = require('path');
-const { openDb } = require('./db');
 const { DATA_DIR } = require('./paths');
+const builder = require('./transcript-normalizer');
+const parser = require('./transcript-parser');
+const candidate = require('./transcript-candidate');
 
 const DIR = join(DATA_DIR, 'transcripts');
 const ANSI_RE = /\x1b[\[\]()#;?]*[0-9;]*[a-zA-Z@`~]|\x1b\].*?(?:\x07|\x1b\\)|\x1b.|\r|\x07/g;
 const MAX_CACHE = 50 * 1024;
+const LEGACY_SUFFIXES = ['-parsed.jsonl', '.screen'];
 
 const inputBuf = {};
 const outputBuf = {};
 const cache = {};
 const prefixes = {};
+const entriesById = {};
 const userTexts = {}; // sessionId → [text, ...] — user prompts for parser matching
+const finalizePreset = {};
+const lastAgentText = {};
 let broadcast = null;
 let notifyPlugin = null;
 
-function trimCache(id) {
-  if (cache[id]?.length > MAX_CACHE) cache[id] = cache[id].slice(-MAX_CACHE);
+function tlog(id, msg) {
+  // console.log(`[transcript:${id.slice(0,8)}] ${msg}`);
 }
 
-function clearInvalidEntries(validIds) {
-  if (!validIds) return;
-  const db = openDb();
-  if (!validIds.size) {
-    db.prepare('DELETE FROM transcript_entries').run();
-    return;
-  }
-  const ids = [...validIds];
-  const placeholders = ids.map(() => '?').join(', ');
-  db.prepare(`DELETE FROM transcript_entries WHERE session_id NOT IN (${placeholders})`).run(...ids);
+function clog(id, msg) {
+  if (finalizePreset[id] !== 'claude-code') return;
+  // console.log(`[claude:transcript:${id.slice(0,8)}] ${msg}`);
 }
-
-function importLegacyTranscripts(validIds) {
-  const db = openDb();
-  const existing = db.prepare('SELECT 1 FROM transcript_entries LIMIT 1').get();
-  if (existing || !existsSync(DIR)) return;
-
-  const files = readdirSync(DIR).filter(f => f.endsWith('.jsonl'));
-  const insert = db.prepare('INSERT INTO transcript_entries (session_id, ts, role, text) VALUES (?, ?, ?, ?)');
-
-  db.exec('BEGIN');
-  try {
-    for (const file of files) {
-      const id = basename(file, '.jsonl');
-      if (validIds && !validIds.has(id)) continue;
-      const lines = readFileSync(join(DIR, file), 'utf8').split('\n').filter(Boolean);
-      for (const line of lines) {
-        try {
-          const entry = JSON.parse(line);
-          insert.run(id, Number(entry.ts) || Date.now(), entry.role || 'agent', String(entry.text || ''));
-        } catch {}
-      }
-    }
-    db.exec('COMMIT');
-  } catch (error) {
-    db.exec('ROLLBACK');
-    throw error;
-  }
-}
-
-function setPrefix(id, prefix) { prefixes[id] = prefix; }
 
 function init(bc, validIds, pluginNotify) {
   broadcast = bc;
   notifyPlugin = pluginNotify || null;
-  for (const key of Object.keys(cache)) delete cache[key];
-
-  clearInvalidEntries(validIds);
-  importLegacyTranscripts(validIds);
-
-  const rows = openDb().prepare(`
-    SELECT session_id, text
-    FROM transcript_entries
-    ORDER BY session_id ASC, ts ASC, id ASC
-  `).all();
-  for (const row of rows) {
-    if (validIds && !validIds.has(row.session_id)) continue;
-    if (!cache[row.session_id]) cache[row.session_id] = '';
-    cache[row.session_id] += '\n' + row.text;
-    trimCache(row.session_id);
+  if (!existsSync(DIR)) mkdirSync(DIR, { recursive: true });
+  for (const file of readdirSync(DIR).filter(f => LEGACY_SUFFIXES.some(s => f.endsWith(s)))) {
+    try { unlinkSync(join(DIR, file)); } catch {}
+  }
+  for (const file of readdirSync(DIR).filter(f => f.endsWith('.jsonl'))) {
+    const id = basename(file, '.jsonl');
+    if (validIds && !validIds.has(id)) { try { unlinkSync(join(DIR, file)); } catch {} continue; }
+    try {
+      const lines = readFileSync(join(DIR, file), 'utf8').trim().split('\n').filter(Boolean);
+      entriesById[id] = lines.map(l => { try { return JSON.parse(l); } catch { return null; } }).filter(Boolean);
+      cache[id] = entriesById[id].map(e => e.text).join('\n');
+      if (cache[id].length > MAX_CACHE) cache[id] = cache[id].slice(-MAX_CACHE);
+    } catch {}
   }
 }
 
+function fpath(id) { return join(DIR, `${id}.jsonl`); }
+function setPrefix(id, prefix) { prefixes[id] = prefix; }
+function setFinalizeOnIdle(id, presetId) {
+  if (!presetId) { delete finalizePreset[id]; return; }
+  finalizePreset[id] = presetId;
+  entriesById[id] = builder.compactEntries(entriesById[id], presetId);
+}
+
+function rewrite(id) {
+  const entries = entriesById[id] || [];
+  writeFileSync(fpath(id), entries.map(e => JSON.stringify(e)).join('\n') + (entries.length ? '\n' : ''));
+  cache[id] = entries.map(e => e.text).join('\n');
+  if (cache[id].length > MAX_CACHE) cache[id] = cache[id].slice(-MAX_CACHE);
+  tlog(id, `rewrite entries=${entries.length} last=${entries.length ? entries[entries.length - 1].role : 'none'}`);
+  clog(id, `rewrite entries=${entries.length} last=${entries.length ? entries[entries.length - 1].role : 'none'}`);
+}
+
 function store(id, role, text) {
-  openDb().prepare(`
-    INSERT INTO transcript_entries (session_id, ts, role, text)
-    VALUES (?, ?, ?, ?)
-  `).run(id, Date.now(), role, text);
-  if (!cache[id]) cache[id] = '';
-  cache[id] += '\n' + text;
-  trimCache(id);
+  const prefix = prefixes[id] || '';
+  if (finalizePreset[id]) {
+    if (!entriesById[id]) entriesById[id] = [];
+    const entry = { ts: Date.now(), role, text, ...(prefix && { prefix }) };
+    tlog(id, `store role=${role} finalize=${finalizePreset[id]} raw=${JSON.stringify(String(text).slice(0, 160))}`);
+    builder.addEntry(entriesById[id], entry, finalizePreset[id]);
+    rewrite(id);
+  } else {
+    tlog(id, `store role=${role} append raw=${JSON.stringify(String(text).slice(0, 160))}`);
+    appendFile(fpath(id), JSON.stringify({ ts: Date.now(), role, text, ...(prefix && { prefix }) }) + '\n', () => {});
+    if (!cache[id]) cache[id] = '';
+    cache[id] += '\n' + text;
+    if (cache[id].length > MAX_CACHE) cache[id] = cache[id].slice(-MAX_CACHE);
+  }
   if (broadcast) broadcast({ type: 'transcript.append', id, role, text });
   if (notifyPlugin) notifyPlugin(id, role, text);
 }
@@ -119,7 +110,13 @@ function trackInput(id, data) {
     }
     if (ch === '\r' || ch === '\n') {
       const line = buf.text.trim();
-      if (line) { store(id, 'user', line); if (!userTexts[id]) userTexts[id] = []; userTexts[id].push(line); }
+      if (line) {
+        delete lastAgentText[id];
+        candidate.clear(id);
+        store(id, 'user', line);
+        if (!userTexts[id]) userTexts[id] = [];
+        userTexts[id].push(line);
+      }
       buf.text = '';
     } else if (ch === '\x7f' || ch === '\x08') {
       const chars = Array.from(buf.text);
@@ -131,8 +128,21 @@ function trackInput(id, data) {
   }
 }
 
+function recordInjectedInput(id, text) {
+  delete lastAgentText[id];
+  candidate.clear(id);
+  for (const raw of String(text).split(/\r?\n/)) {
+    const line = raw.trim();
+    if (!line) continue;
+    store(id, 'user', line);
+    if (!userTexts[id]) userTexts[id] = [];
+    userTexts[id].push(line);
+  }
+}
+
 // Server-side fallback: captures raw PTY output (noisy but always available)
 function trackOutput(id, data) {
+  if (finalizePreset[id]) return;
   if (!outputBuf[id]) outputBuf[id] = { text: '', timer: null };
   const buf = outputBuf[id];
   buf.text += data;
@@ -149,192 +159,80 @@ function flush(id) {
   if (lines.length) store(id, 'agent', lines.join('\n'));
 }
 
-// Browser-side clean snapshot: overwrites a per-session file with the full
-// xterm buffer as rendered by the browser. No diffing, no JSONL — just the
-// clean screen content. Mobile reads this for "last agent message".
-function storeBuffer(id, lines) {
-  const isChrome = t => !t
-    || /^[─━═\u2500-\u257f]+$/.test(t)                    // box-drawing horizontal lines
-    || /^[▀▄█▌▐░▒▓╭╮╰╯│╔╗╚╝║]+$/.test(t)                 // block elements, box corners, vertical bars
-    || (/[█▀▄▌▐░▒▓]/.test(t) && /^[█▀▄▌▐░▒▓\s]+$/.test(t)) // ASCII art (blocks + whitespace, e.g. logos)
-    || /^[❯>$%#]\s*$/.test(t)                              // bare prompt markers
-    || /^(esc to interrupt|\? for shortcuts)$/i.test(t);   // Claude Code chrome
-  const filtered = lines.filter(l => !isChrome(l.trim()));
-  while (filtered.length && !filtered[filtered.length - 1].trim()) filtered.pop();
-  const screenPath = join(DIR, `${id}.screen`);
-  if (filtered.length) writeFileSync(screenPath, filtered.join('\n'));
-  else try { unlinkSync(screenPath); } catch {}
-}
-
-// Read the clean screen snapshot for a session (if available).
-function getScreen(id) {
-  const file = join(DIR, `${id}.screen`);
-  if (!existsSync(file)) return null;
-  try { return readFileSync(file, 'utf8'); } catch { return null; }
-}
-
-// Per-agent screen parsers. Each returns [{role, text}] from .screen content.
-const agentParsers = {
-  'claude-code': (lines, id) => {
-    const known = userTexts[id]?.length ? new Set(userTexts[id]) : null;
-    const turns = [];
-    let current = null;
-    for (const line of lines) {
-      const agent = line.match(/^(?:[│ ]\s*)?[⏺•●]\s(.*)$/);
-      if (agent) {
-        if (current) { current.text = current.text.replace(/\n+$/, ''); turns.push(current); }
-        current = { role: 'agent', text: agent[1] };
-        continue;
-      }
-      const userM = line.match(/^(?:[│ ]\s*)?[❯›]\s(.*)$/);
-      if (userM && (known ? known.has(userM[1].trim()) : true)) {
-        if (current) { current.text = current.text.replace(/\n+$/, ''); turns.push(current); }
-        current = { role: 'user', text: userM[1] };
-        continue;
-      }
-      if (!current) continue;
-      let cont = line;
-      if (cont.startsWith('│ ')) cont = cont.slice(2);
-      else if (cont.startsWith('  ')) cont = cont.slice(2);
-      current.text += '\n' + cont;
-    }
-    if (current) { current.text = current.text.replace(/\n+$/, ''); turns.push(current); }
-    return turns.length >= 2 ? turns : null;
-  },
-  'codex': (lines, id) => {
-    const known = userTexts[id]?.length ? new Set(userTexts[id]) : null;
-    const turns = [];
-    let current = null;
-    for (const line of lines) {
-      const agent = line.match(/^(?:│\s*)?•\s(.*)$/);
-      if (agent) {
-        if (current) { current.text = current.text.replace(/\n+$/, ''); turns.push(current); }
-        current = { role: 'agent', text: agent[1] };
-        continue;
-      }
-      const userM = line.match(/^(?:│\s*)?›\s(.*)$/);
-      if (userM && (known ? known.has(userM[1].trim()) : true)) {
-        if (current) { current.text = current.text.replace(/\n+$/, ''); turns.push(current); }
-        current = { role: 'user', text: userM[1] };
-        continue;
-      }
-      if (!current) continue;
-      let cont = line;
-      if (cont.startsWith('│ ')) cont = cont.slice(2);
-      else if (cont.startsWith('  ')) cont = cont.slice(2);
-      current.text += '\n' + cont;
-    }
-    if (current) { current.text = current.text.replace(/\n+$/, ''); turns.push(current); }
-    return turns.length >= 2 ? turns : null;
-  },
-  'gemini-cli': (lines, id) => {
-    const known = userTexts[id]?.length ? new Set(userTexts[id]) : null;
-    const geminiChrome = t => {
-      const s = t.trim();
-      return /^shift\+tab to accept/i.test(s)
-        || /^(Type your message|@path\/to\/)/i.test(s)
-        || /^(\/\w+ |no sandbox|\/model )/i.test(s)
-        || /^[~\/\\].*\(main[*]?\)\s*$/i.test(s)
-        || /^(Logged in with|Plan:|Tips for getting started)/i.test(s)
-        || /^\d+\.\s+(Ask questions|Be specific|Create GEMINI)/i.test(s)
-        || /^ℹ\s/.test(s);
-    };
-    const turns = [];
-    let current = null;
-    for (const line of lines) {
-      if (geminiChrome(line)) continue;
-      const isAgent = line.startsWith('✦ ');
-      const userM = line.startsWith(' > ') ? line.slice(3) : null;
-      const isUser = userM && (known ? known.has(userM.trim()) : true);
-      if (isUser || isAgent) {
-        if (current) { current.text = current.text.replace(/\n+$/, ''); turns.push(current); }
-        current = { role: isUser ? 'user' : 'agent', text: isUser ? userM : line.slice(2) };
-        continue;
-      }
-      if (!current) continue;
-      current.text += '\n' + line;
-    }
-    if (current) { current.text = current.text.replace(/\n+$/, ''); turns.push(current); }
-    return turns.length >= 2 ? turns : null;
-  },
-};
-
-// Fallback anchor parser for agents without a dedicated parser.
-// Uses JSONL user inputs to find prompt lines in the screen.
-function anchorParse(id, lines) {
-  const file = fpath(id);
-  if (!existsSync(file)) return null;
-  const users = [];
-  try {
-    for (const l of readFileSync(file, 'utf8').trim().split('\n')) {
-      try { const e = JSON.parse(l); if (e.role === 'user') users.push(e.text); } catch {}
-    }
-  } catch { return null; }
-  if (!users.length) return null;
-
-  const isPrompt = (line, text) => { const t = line.trim(); return t.endsWith(text) && t.length - text.length <= 6; };
-
-  const lastUser = users[users.length - 1];
-  let lastIdx = -1;
-  for (let i = lines.length - 1; i >= 0; i--) {
-    if (isPrompt(lines[i], lastUser)) { lastIdx = i; break; }
-  }
-  if (lastIdx < 0) return null;
-
-  const anchors = [{ idx: lastIdx, text: lastUser }];
-  for (let u = users.length - 2; u >= 0 && anchors.length < 3; u--) {
-    for (let i = anchors[anchors.length - 1].idx - 1; i >= 0; i--) {
-      if (isPrompt(lines[i], users[u])) { anchors.push({ idx: i, text: users[u] }); break; }
-    }
-  }
-  anchors.reverse();
-
-  const turns = [];
-  for (let p = 0; p < anchors.length; p++) {
-    turns.push({ role: 'user', text: anchors[p].text });
-    const start = anchors[p].idx + 1;
-    const end = p + 1 < anchors.length ? anchors[p + 1].idx : lines.length;
-    const agentLines = lines.slice(start, end).filter(l => l.trim());
-    if (agentLines.length) turns.push({ role: 'agent', text: agentLines.join('\n') });
-  }
-  if (turns.length < 2 || turns[turns.length - 1].role !== 'agent') return null;
-  return turns;
-}
-
-// Parse .screen into structured turns — use agent-specific parser if available, else anchor fallback.
-function getScreenTurns(id, agent) {
-  const screen = getScreen(id);
-  if (!screen) return null;
-  const lines = screen.split('\n');
-  const parser = agentParsers[agent];
-  const turns = parser ? parser(lines, id) : anchorParse(id, lines);
-  // Drop trailing user turn — it's the empty prompt or unanswered input
-  if (turns?.length && turns[turns.length - 1].role === 'user') turns.pop();
+function parseTurnsFromLines(id, agent, lines, opts) {
+  const turns = parser.parseTurns(agent, lines, getUsers(id));
+  if (!opts?.raw && turns?.length && turns[turns.length - 1].role === 'user') turns.pop();
+  tlog(id, `parse agent=${agent} lines=${lines?.length || 0} turns=${turns?.map(t => t.role).join(',') || 'none'}`);
   return turns?.length >= 2 ? turns : null;
 }
 
-function getLastTurns(id, n) {
-  n = n || 4;
+function updateAgentCandidate(id, presetId, lines) {
+  candidate.update(id, presetId, lines, getUsers(id));
+}
+
+function commitAgentCandidate(id, presetId) {
+  if (!finalizePreset[id]) return;
+  const text = candidate.get(id);
+  if (!text) { tlog(id, 'candidate commit skip empty'); clog(id, 'candidate commit skip empty'); return; }
+  if (text === lastAgentText[id]) { tlog(id, 'candidate commit skip duplicate'); clog(id, 'candidate commit skip duplicate'); return; }
+  lastAgentText[id] = text;
+  store(id, 'agent', text);
+}
+
+function clearAgentCandidate(id) {
+  candidate.clear(id);
+}
+
+function getUsers(id) {
+  if (userTexts[id]?.length) return userTexts[id];
+  return (entriesById[id] || []).filter(e => e.role === 'user').map(e => e.text);
+}
+
+function readEntries(id) {
   const file = fpath(id);
   if (!existsSync(file)) return [];
   try {
-    const lines = readFileSync(file, 'utf8').trim().split('\n');
-    const turns = [];
-    for (let i = lines.length - 1; i >= 0; i--) {
-      let entry;
-      try { entry = JSON.parse(lines[i]); } catch { continue; }
-      if (turns.length && turns[turns.length - 1].role === entry.role) {
-        turns[turns.length - 1].text = entry.text + '\n' + turns[turns.length - 1].text;
-      } else {
-        turns.push({ role: entry.role, text: entry.text });
-        if (turns.length >= n) break;
-      }
-    }
-    return turns.reverse();
+    const cached = entriesById[id];
+    if (Array.isArray(cached) && cached.length) return cached;
+    const lines = readFileSync(file, 'utf8').trim().split('\n').filter(Boolean);
+    return lines.map(line => { try { return JSON.parse(line); } catch { return null; } }).filter(Boolean);
   } catch { return []; }
 }
 
+function foldTurns(entries, n, order) {
+  const turns = [];
+  const fromStart = order === 'start';
+  const list = fromStart ? entries : [...entries].reverse();
+  for (const entry of list) {
+    if (turns.length && turns[turns.length - 1].role === entry.role) {
+      if (fromStart) turns[turns.length - 1].text += '\n' + entry.text;
+      else turns[turns.length - 1].text = entry.text + '\n' + turns[turns.length - 1].text;
+    } else {
+      turns.push({ role: entry.role, text: entry.text });
+      if (turns.length >= n) break;
+    }
+  }
+  return fromStart ? turns : turns.reverse();
+}
+
+function getTurns(id, n, order) {
+  n = n || 4;
+  return foldTurns(readEntries(id), n, order || 'end');
+}
+
 function getCache() { return { ...cache }; }
+
+function getReplayText(id, presetId) {
+  const entries = builder.compactEntries(entriesById[id], presetId);
+  if (!entries?.length) return '';
+  const marks = {
+    'claude-code': { user: '❯', agent: '⏺' },
+    codex: { user: '›', agent: '•' },
+    'gemini-cli': { user: '>', agent: '✦' },
+    opencode: { user: '›', agent: '•' },
+  }[presetId] || { user: '›', agent: '•' };
+  return entries.map(e => `${e.role === 'user' ? marks.user : marks.agent} ${e.text}`).join('\n\n');
+}
 
 function clear(id) {
   flush(id);
@@ -344,9 +242,38 @@ function clear(id) {
     delete outputBuf[id];
   }
   delete cache[id];
+  delete entriesById[id];
   delete prefixes[id];
   delete userTexts[id];
-  try { unlinkSync(join(DIR, `${id}.screen`)); } catch {}
+  delete lastAgentText[id];
+  delete finalizePreset[id];
+  candidate.clear(id);
 }
 
-module.exports = { init, trackInput, trackOutput, storeBuffer, getScreen, getScreenTurns, getLastTurns, getCache, clear, setPrefix };
+// Detect interactive menus from raw screen lines. Returns [{value, label, selected}] or null.
+// Finds the footer line, then walks upward collecting only the contiguous menu block.
+const MENU_MARKERS = { 'claude-code': /[❯›]/, codex: /[›❯]/, 'gemini-cli': /●/ };
+const MENU_CHOICE_RE = /^\s*(?:[│❯›●•]\s+)*(\d+)\.\s+(.+)$/;
+function detectMenu(lines, presetId) {
+  const marker = MENU_MARKERS[presetId];
+  if (!marker) return null;
+  // Only scan the bottom 40 lines — menus are always near the visible area
+  const scanStart = Math.max(0, lines.length - 40);
+  let footerIdx = -1;
+  for (let i = lines.length - 1; i >= scanStart; i--) {
+    if (/\besc\b|\(esc\)/i.test(lines[i])) { footerIdx = MENU_CHOICE_RE.test(lines[i]) ? i + 1 : i; break; }
+  }
+  if (footerIdx < 0) return null;
+  const choices = [];
+  for (let i = footerIdx - 1; i >= scanStart; i--) {
+    if (!lines[i].trim() || /^[│\s]+$/.test(lines[i])) continue;
+    const m = lines[i].match(MENU_CHOICE_RE);
+    if (!m) { if (/^\s{2,}\S/.test(lines[i])) continue; break; }
+    if (choices.length && +m[1] >= +choices[0].value) break;
+    choices.unshift({ value: m[1], label: m[2].trim(), selected: marker.test(lines[i]) });
+  }
+  if (!choices.some(c => c.selected)) return null;
+  return choices.length ? choices : null;
+}
+
+module.exports = { init, trackInput, recordInjectedInput, trackOutput, updateAgentCandidate, commitAgentCandidate, clearAgentCandidate, parseTurnsFromLines, getTurns, getCache, getReplayText, clear, setPrefix, setFinalizeOnIdle, detectMenu };

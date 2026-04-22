@@ -13,6 +13,8 @@ export const state = {
   presets: [],
   resumable: [],
   filter: { query: '', tab: 'all' },
+  pills: new Map(),
+  activePill: null,
   transcriptCache: {},
   auth: {
     ready: false,

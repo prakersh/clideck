@@ -14,6 +14,7 @@ const ANIMALS = [
 ];
 const MRU_KEY = 'termui-last-command';
 const MRU_LIST_KEY = 'termui-recent-commands';
+const NO_PROJECT_VALUE = '__none__';
 const FOLDER_SVG = `<svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>`;
 
 function randomName() {
@@ -27,6 +28,11 @@ function findCommandForPreset(p) {
     || state.cfg.commands.find(c => binName(c.command) === binName(p.command));
 }
 
+function telemetryEnabledForPreset(preset, existing) {
+  if (preset?.telemetryEnabled === true) return true;
+  return !!existing?.telemetryEnabled;
+}
+
 // True if preset binary is missing and the configured command is unchanged from the preset default
 function isPresetMissing(p) {
   if (p.available !== false) return false;
@@ -36,25 +42,47 @@ function isPresetMissing(p) {
   return cmd.command === p.command;
 }
 
+function isPresetOutdated(p) {
+  return p.available !== false && p.versionOk === false;
+}
+
+// True if preset binary exists but telemetry/hooks are not configured yet
+function isPresetUnpatched(p) {
+  if (p.available === false || p.versionOk === false || !p.telemetryAutoSetup) return false;
+  const cmd = findCommandForPreset(p);
+  return !cmd || !cmd.telemetryStatus?.ok;
+}
+
 function renderPresetButtons() {
   return sortedPresets().map(p => {
-    const missing = isPresetMissing(p);
-    if (missing) {
+    if (isPresetMissing(p)) {
       return `
       <div class="w-full flex items-center gap-2.5 px-3 py-2 rounded-md text-sm text-left text-slate-500">
         <span class="opacity-40">${agentIcon(p.icon, 24)}</span>
-        <span class="flex-1 min-w-0">
-          <span>${esc(p.name)}</span>
-        </span>
+        <span class="flex-1 min-w-0">${esc(p.name)}</span>
         <button class="install-btn px-2.5 py-1 text-[11px] font-medium text-blue-400 hover:text-blue-300 bg-blue-500/10 hover:bg-blue-500/20 rounded-md transition-colors" data-preset="${p.presetId}">Add</button>
+      </div>`;
+    }
+    if (isPresetOutdated(p)) {
+      return `
+      <div class="w-full flex items-center gap-2.5 px-3 py-2 rounded-md text-sm text-left text-slate-500">
+        <span class="opacity-40">${agentIcon(p.icon, 24)}</span>
+        <span class="flex-1 min-w-0">${esc(p.name)}</span>
+        <button class="install-btn px-2.5 py-1 text-[11px] font-medium text-rose-400 hover:text-rose-300 bg-rose-500/10 hover:bg-rose-500/20 rounded-md transition-colors" data-preset="${p.presetId}">Update</button>
+      </div>`;
+    }
+    if (isPresetUnpatched(p)) {
+      return `
+      <div class="w-full flex items-center gap-2.5 px-3 py-2 rounded-md text-sm text-left text-slate-500">
+        <span class="opacity-40">${agentIcon(p.icon, 24)}</span>
+        <span class="flex-1 min-w-0">${esc(p.name)}</span>
+        <button class="setup-btn px-2.5 py-1 text-[11px] font-medium text-amber-400 hover:text-amber-300 bg-amber-500/10 hover:bg-amber-500/20 rounded-md transition-colors" data-preset="${p.presetId}">Setup</button>
       </div>`;
     }
     return `
       <button class="preset-btn w-full flex items-center gap-2.5 px-3 py-2 rounded-md hover:bg-slate-700/70 text-sm transition-colors text-left text-slate-300" data-preset="${p.presetId}">
         <span>${agentIcon(p.icon, 24)}</span>
-        <span class="flex-1 min-w-0">
-          <span>${esc(p.name)}</span>
-        </span>
+        <span class="flex-1 min-w-0">${esc(p.name)}</span>
       </button>`;
   }).join('');
 }
@@ -122,8 +150,8 @@ function createFromPreset(preset, sessionName, cwd, projectId) {
       resumeCommand: preset.resumeCommand,
       sessionIdPattern: preset.sessionIdPattern,
       outputMarker: preset.outputMarker || null,
-      telemetryEnabled: preset.presetId === 'claude-code',
-      telemetryStatus: preset.presetId === 'claude-code' ? { ok: true } : null,
+      telemetryEnabled: telemetryEnabledForPreset(preset),
+      telemetryStatus: null,
       bridge: preset.bridge,
     };
     state.cfg.commands.push(cmd);
@@ -151,20 +179,23 @@ export function openCreator() {
   card.className = 'p-3 border-b border-slate-700/50 bg-slate-800/30';
   card.innerHTML = `
     ${(state.cfg.projects?.length) ? `
+    <div class="text-[10px] font-semibold uppercase tracking-wider text-slate-500 mb-1.5">Select project</div>
     <input type="hidden" id="creator-project" value="">
     <button type="button" id="creator-project-trigger" class="w-full px-3 py-1.5 text-xs bg-slate-900 border border-slate-700 rounded-md text-slate-400 text-left flex items-center justify-between outline-none hover:border-slate-500 transition-colors cursor-pointer mb-2">
-      <span id="creator-project-label">No project</span>
+      <span id="creator-project-label">Select project</span>
       <span class="text-slate-600 ml-2">&#9662;</span>
     </button>` : ''}
-    <input id="creator-name" type="text" maxlength="35" placeholder="Session / Agent name"
+    <div class="text-[10px] font-semibold uppercase tracking-wider text-slate-500 mb-1.5">Session name</div>
+    <input id="creator-name" type="text" maxlength="35" placeholder="Session name"
       class="w-full px-3 py-2 text-sm bg-slate-900 border border-slate-700 rounded-md text-slate-200 placeholder-slate-500 outline-none focus:border-blue-500 transition-colors mb-2">
-    <div class="flex items-center gap-1.5 mb-2">
+    <div id="creator-cwd-wrap" class="flex items-center gap-1.5 mb-2 ${(state.cfg.projects?.length) ? 'hidden' : ''}">
       <input id="creator-cwd" type="text" value="${esc(defaultPath)}" placeholder="Working directory"
         class="flex-1 px-3 py-1.5 text-xs bg-slate-900 border border-slate-700 rounded-md text-slate-400 placeholder-slate-600 outline-none focus:border-blue-500 transition-colors font-mono">
       <button id="creator-browse" class="flex-shrink-0 w-7 h-7 flex items-center justify-center rounded-md border border-slate-700 text-slate-500 hover:text-slate-300 hover:bg-slate-700 transition-colors" title="Browse">
         ${FOLDER_SVG}
       </button>
     </div>
+    <div class="text-[10px] font-semibold uppercase tracking-wider text-slate-500 mb-1.5">Choose agent provider</div>
     <div id="creator-presets" class="space-y-0.5">
       ${renderPresetButtons()}
     </div>`;
@@ -174,7 +205,10 @@ export function openCreator() {
 
   const nameInput = card.querySelector('#creator-name');
   const cwdInput = card.querySelector('#creator-cwd');
-  nameInput.focus();
+  const cwdWrap = card.querySelector('#creator-cwd-wrap');
+  const projHidden = card.querySelector('#creator-project');
+  const projTrigger = card.querySelector('#creator-project-trigger');
+  (projTrigger || nameInput).focus();
 
   nameInput.addEventListener('keydown', (e) => {
     if (e.key === 'Escape') closeCreator();
@@ -190,15 +224,33 @@ export function openCreator() {
   });
 
   // Project picker dropdown
-  const projTrigger = card.querySelector('#creator-project-trigger');
   if (projTrigger) {
+    const projects = [...(state.cfg.projects || [])].sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: 'base' }));
+    const projLabel = card.querySelector('#creator-project-label');
+    const setProjectSelection = (value) => {
+      projHidden.value = value;
+      const proj = projects.find(p => p.id === value);
+      if (proj) {
+        projLabel.textContent = proj.name;
+        cwdWrap.classList.add('hidden');
+        cwdInput.value = proj.path || defaultPath;
+        return;
+      }
+      if (value === NO_PROJECT_VALUE) {
+        projLabel.textContent = 'None (outside project hierarchy)';
+        cwdWrap.classList.remove('hidden');
+        cwdInput.value = cwdInput.value.trim() || defaultPath;
+        return;
+      }
+      projLabel.textContent = 'Select project';
+      cwdWrap.classList.add('hidden');
+      cwdInput.value = defaultPath;
+    };
+
     let projMenuCleanup = null;
     projTrigger.addEventListener('click', () => {
       if (projMenuCleanup) { projMenuCleanup(); return; }
       const rect = projTrigger.getBoundingClientRect();
-      const hidden = card.querySelector('#creator-project');
-      const label = card.querySelector('#creator-project-label');
-      const projects = state.cfg.projects || [];
 
       const menu = document.createElement('div');
       const vpH = window.visualViewport?.height ?? window.innerHeight;
@@ -210,9 +262,9 @@ export function openCreator() {
       menu.style.width = rect.width + 'px';
 
       menu.innerHTML = `
-        <div class="proj-option px-3 py-1.5 cursor-pointer hover:bg-slate-700 transition-colors text-xs text-slate-400 ${!hidden.value ? 'bg-slate-700/50' : ''}" data-value="">No project</div>
+        <div class="proj-option px-3 py-1.5 cursor-pointer hover:bg-slate-700 transition-colors text-xs text-slate-400 ${projHidden.value === NO_PROJECT_VALUE ? 'bg-slate-700/50' : ''}" data-value="${NO_PROJECT_VALUE}">None (outside project hierarchy)</div>
         ${projects.map(p => `
-          <div class="proj-option flex items-center gap-2 px-3 py-1.5 cursor-pointer hover:bg-slate-700 transition-colors text-xs text-slate-300 ${hidden.value === p.id ? 'bg-slate-700/50' : ''}" data-value="${p.id}">
+          <div class="proj-option flex items-center gap-2 px-3 py-1.5 cursor-pointer hover:bg-slate-700 transition-colors text-xs text-slate-300 ${projHidden.value === p.id ? 'bg-slate-700/50' : ''}" data-value="${p.id}">
             <span class="w-2 h-2 rounded-full flex-shrink-0" style="background:${p.color || '#3b82f6'}"></span>
             ${esc(p.name)}
           </div>`).join('')}`;
@@ -222,12 +274,7 @@ export function openCreator() {
       const onClick = (e) => {
         const item = e.target.closest('.proj-option');
         if (!item) return;
-        hidden.value = item.dataset.value;
-        const proj = projects.find(p => p.id === item.dataset.value);
-        label.textContent = proj ? proj.name : 'No project';
-        // Auto-set working directory from project path
-        if (proj?.path) cwdInput.value = proj.path;
-        else cwdInput.value = defaultPath;
+        setProjectSelection(item.dataset.value);
         projMenuCleanup();
       };
       const onOutside = (e) => {
@@ -253,14 +300,31 @@ export function openCreator() {
       if (preset?.installCmd) showInstallToast(preset);
       return;
     }
+    const setupBtn = e.target.closest('.setup-btn');
+    if (setupBtn) {
+      const preset = state.presets.find(p => p.presetId === setupBtn.dataset.preset);
+      if (!preset) return;
+      let cmd = findCommandForPreset(preset);
+      if (!cmd) {
+        cmd = { id: crypto.randomUUID(), presetId: preset.presetId, label: preset.name, icon: preset.icon, command: preset.command, enabled: true, defaultPath: '', isAgent: preset.isAgent, canResume: preset.canResume, resumeCommand: preset.resumeCommand, sessionIdPattern: preset.sessionIdPattern, outputMarker: preset.outputMarker || null, telemetryEnabled: telemetryEnabledForPreset(preset), telemetryStatus: null, bridge: preset.bridge };
+        state.cfg.commands.push(cmd);
+        send({ type: 'config.update', config: state.cfg });
+      }
+      document.dispatchEvent(new CustomEvent('clideck:setup', { detail: { commandId: cmd.id } }));
+      return;
+    }
     const btn = e.target.closest('.preset-btn');
     if (!btn) return;
     const preset = state.presets.find(p => p.presetId === btn.dataset.preset);
     if (!preset) return;
+    if (projTrigger && !projHidden.value) {
+      showToast('Choose a project or select `None (outside project hierarchy)`.', { title: 'Choose Project', type: 'warn' });
+      projTrigger.focus();
+      return;
+    }
     const name = nameInput.value.trim() || fallbackName;
     const cwd = cwdInput.value.trim() || undefined;
-    const projectSelect = card.querySelector('#creator-project');
-    const projectId = projectSelect?.value || undefined;
+    const projectId = projHidden?.value && projHidden.value !== NO_PROJECT_VALUE ? projHidden.value : undefined;
     createFromPreset(preset, name, cwd, projectId);
     closeCreator();
   });

@@ -29,16 +29,19 @@
       --color-session-icon-bg: #f7f5f3;
     }
     .session-row,
-    .resumable-row {
+    .resumable-row,
+    .pill-row {
       margin: 2px 8px;
       border-radius: 10px;
       transition: background-color 0.18s ease;
     }
     .session-row:hover,
-    .resumable-row:hover {
+    .resumable-row:hover,
+    .pill-row:hover {
       background: var(--color-list-row-hover) !important;
     }
-    .session-row.active-session {
+    .session-row.active-session,
+    .pill-row.active-session {
       background: var(--color-list-row-active) !important;
     }
     .project-group {
@@ -806,11 +809,9 @@
         <div class="mb-5">
           <label class="block text-xs text-slate-400 mb-1.5 ml-6">Minimum working time before notifying</label>
           <select id="cfg-notify-min-work" class="ml-6 px-3 py-1.5 text-sm bg-slate-800 border border-slate-600 rounded-md text-slate-200 outline-none focus:border-blue-500 transition-colors cursor-pointer">
-            <option value="5">5 seconds</option>
-            <option value="10" selected>10 seconds</option>
-            <option value="20">20 seconds</option>
+            <option value="0" selected>Always</option>
+            <option value="10">10 seconds</option>
             <option value="30">30 seconds</option>
-            <option value="60">60 seconds</option>
           </select>
         </div>
         <div class="mt-6 px-4 py-3 rounded-lg bg-slate-800/50 border border-slate-700/40">
@@ -852,10 +853,10 @@
         <!-- Intro (not installed) -->
         <div id="remote-intro" class="hidden px-6 py-6 flex flex-col items-center gap-4">
           <svg class="w-12 h-12 text-slate-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="2" width="14" height="20" rx="2" ry="2"/><line x1="12" y1="18" x2="12.01" y2="18"/></svg>
-          <h3 class="text-[13px] font-semibold text-slate-200">CliDeck Mobile Remote</h3>
-          <p class="text-xs text-slate-400 text-center leading-relaxed">Control your AI agents from your phone. See live status, send messages, and get notifications — all end-to-end encrypted.</p>
+          <h3 id="remote-intro-title" class="text-[13px] font-semibold text-slate-200">CliDeck Mobile Remote</h3>
+          <p id="remote-intro-text" class="text-xs text-slate-400 text-center leading-relaxed">Control your AI agents from your phone. See live status, send messages, and get notifications — all end-to-end encrypted.</p>
           <button id="remote-add" class="mt-1 w-full px-4 py-2.5 text-[13px] font-medium bg-blue-600 hover:bg-blue-500 text-white rounded-lg transition-colors">Add to CliDeck</button>
-          <p class="text-[11px] text-slate-600 text-center">Installs the <code class="text-slate-500">clideck-remote</code> package via npm</p>
+          <p id="remote-intro-foot" class="text-[11px] text-slate-600 text-center">Installs the <code class="text-slate-500">clideck-remote</code> package via npm</p>
         </div>
 
         <!-- Installing -->
@@ -943,7 +944,17 @@
     <!-- Folder picker -->
     <div id="folder-picker" class="absolute inset-0 z-[320] bg-black/60 backdrop-blur-sm hidden items-center justify-center">
       <div class="bg-slate-800 border border-slate-600 rounded-xl shadow-2xl shadow-black/50 w-full max-w-[420px] max-h-[460px] flex flex-col">
-        <div class="px-4 py-3 border-b border-slate-700 text-sm font-semibold">Choose Directory</div>
+        <div class="px-4 py-3 border-b border-slate-700 flex items-center justify-between">
+          <span class="text-sm font-semibold">Choose Directory</span>
+          <div class="flex items-center gap-2">
+            <button id="fp-new-folder" class="p-1 rounded hover:bg-slate-700 text-slate-400 hover:text-slate-200 transition-colors" title="New folder">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14M5 12h14"/></svg>
+            </button>
+            <button id="fp-toggle-hidden" class="p-1 rounded hover:bg-slate-700 text-slate-500 transition-colors" title="Show hidden files">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
+            </button>
+          </div>
+        </div>
         <div id="fp-path" class="px-4 py-2 text-xs text-slate-400 border-b border-slate-700 break-all"></div>
         <div id="fp-listing" class="flex-1 overflow-y-auto py-1 min-h-[200px]"></div>
         <div class="px-4 py-3 border-t border-slate-700 flex justify-end gap-2">

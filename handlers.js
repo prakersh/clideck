@@ -1,6 +1,6 @@
 const { readFileSync, writeFileSync, mkdirSync, existsSync, copyFileSync, unlinkSync } = require('fs');
 const { join, dirname } = require('path');
-const { execFileSync } = require('child_process');
+const { execFileSync, execFile } = require('child_process');
 const os = require('os');
 const { refreshSocketAuth } = require('./auth');
 const config = require('./config');
@@ -16,6 +16,7 @@ const {
 } = require('./agent-registry');
 const transcript = require('./transcript');
 const plugins = require('./plugin-loader');
+const { upsertCodexConfig, validateCodexConfigToml } = require('./codex-config');
 
 const presets = getPresets();
 
@@ -41,22 +42,51 @@ let remoteUpdateCache = null;
 let remoteUpdateCheckedAt = 0;
 const REMOTE_UPDATE_INTERVAL = 3600000;
 
+function compareVersions(a, b) {
+  const pa = String(a || '').split('.').map(n => parseInt(n, 10) || 0);
+  const pb = String(b || '').split('.').map(n => parseInt(n, 10) || 0);
+  const len = Math.max(pa.length, pb.length);
+  for (let i = 0; i < len; i++) {
+    const diff = (pa[i] || 0) - (pb[i] || 0);
+    if (diff) return diff;
+  }
+  return 0;
+}
+
+function parseVersion(text) {
+  const m = String(text || '').match(/\b(\d+\.\d+\.\d+)\b/);
+  return m ? m[1] : '';
+}
+
+function getInstalledVersion(bin) {
+  try { return parseVersion(execFileSync(bin, ['--version'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] })); } catch {}
+  try { return parseVersion(execFileSync(bin, ['-v'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] })); } catch {}
+  return '';
+}
+
 function checkRemoteUpdate(ws) {
   const now = Date.now();
   if (remoteUpdateCache && now - remoteUpdateCheckedAt < REMOTE_UPDATE_INTERVAL) {
-    if (remoteUpdateCache.available) ws.send(JSON.stringify({ type: 'remote.update', ...remoteUpdateCache }));
+    ws.send(JSON.stringify({ type: 'remote.update', checked: true, ...remoteUpdateCache }));
     return;
   }
   const shellOpt = process.platform === 'win32';
   require('child_process').execFile('npm', ['list', '-g', 'clideck-remote', '--json', '--depth=0'], { shell: shellOpt, timeout: 10000 }, (err, stdout) => {
     let installed;
-    try { installed = JSON.parse(stdout).dependencies['clideck-remote'].version; } catch { return; }
+    try { installed = JSON.parse(stdout).dependencies['clideck-remote'].version; }
+    catch {
+      ws.send(JSON.stringify({ type: 'remote.update', available: false, checked: false }));
+      return;
+    }
     require('child_process').execFile('npm', ['view', 'clideck-remote', 'version'], { shell: shellOpt, timeout: 10000 }, (err2, stdout2) => {
-      if (err2) return;
+      if (err2) {
+        ws.send(JSON.stringify({ type: 'remote.update', installed, available: false, checked: false }));
+        return;
+      }
       const latest = stdout2.trim();
-      remoteUpdateCache = { installed, latest, available: latest !== installed };
+      remoteUpdateCache = { installed, latest, available: compareVersions(latest, installed) > 0 };
       remoteUpdateCheckedAt = now;
-      if (remoteUpdateCache.available) ws.send(JSON.stringify({ type: 'remote.update', ...remoteUpdateCache }));
+      ws.send(JSON.stringify({ type: 'remote.update', checked: true, ...remoteUpdateCache }));
     });
   });
 }
@@ -66,13 +96,20 @@ const whichCmd = process.platform === 'win32' ? 'where' : 'which';
 function checkAvailability() {
   refreshAgentRegistry();
   for (const p of presets) {
-    if (p.presetId === 'shell') { p.available = true; continue; }
-    if (getAliasesForPreset(p.presetId).length) { p.available = true; continue; }
+    if (p.presetId === 'shell') { p.available = true; p.version = ''; p.versionOk = true; p.health = { ok: true }; continue; }
+    const bin = binName(p.command);
+    const hasAlias = getAliasesForPreset(p.presetId).length > 0;
     try {
-      execFileSync(whichCmd, [binName(p.command)], { stdio: 'ignore' });
+      if (!hasAlias) execFileSync(whichCmd, [bin], { stdio: 'ignore' });
       p.available = true;
+      p.version = getInstalledVersion(bin);
+      p.versionOk = !p.minVersion || !p.version || compareVersions(p.version, p.minVersion) >= 0;
+      p.health = p.versionOk ? { ok: true } : { ok: false, reason: `Update required (${p.minVersion}+)` };
     } catch {
       p.available = false;
+      p.version = '';
+      p.versionOk = true;
+      p.health = { ok: false, reason: 'Not installed' };
     }
   }
 
@@ -89,34 +126,98 @@ let cfg = config.load();
 checkAvailability();
 if (detectTelemetryConfig(cfg)) config.save(cfg);
 
+function extractQuotedPath(command, needle) {
+  if (!command || !needle) return '';
+  const parts = String(command).match(/"([^"]+)"/g) || [];
+  for (const part of parts) {
+    const value = part.slice(1, -1);
+    if (value.includes(needle)) return value;
+  }
+  return '';
+}
+
+function hasExistingHook(arr, hookFile, route) {
+  return !!arr?.some(h => h.hooks?.some(x => {
+    if (!x.command?.includes(hookFile) || !x.command?.includes(` ${route}`)) return false;
+    const hookPath = extractQuotedPath(x.command, hookFile);
+    return !!hookPath && existsSync(hookPath);
+  }));
+}
+
+function codexConfigLooksHealthy(content, port) {
+  if (!content.includes('[otel]') || !content.includes(`localhost:${port}`)) return false;
+  const notifyLine = content.match(/^\s*notify\s*=\s*\[(.+)\]\s*$/m)?.[1] || '';
+  if (!notifyLine.includes('notify-helper')) return false;
+  const quoted = [...notifyLine.matchAll(/"([^"]+)"/g)].map(m => m[1]);
+  const helperPath = quoted.find(v => v.includes('notify-helper'));
+  return !!helperPath && existsSync(helperPath);
+}
+
 function detectTelemetryConfig(c) {
   const home = os.homedir();
   const port = '4000';
   let changed = false;
-  for (const cmd of c.commands || []) {
-    const preset = findPresetForCommand(cmd.command);
-    if (!preset) continue;
-    let detected = false;
-    if (preset.presetId === 'claude-code') {
-      detected = true;
-    } else if (preset.presetId === 'codex') {
-      try {
-        const content = readFileSync(join(home, '.codex', 'config.toml'), 'utf8');
-        detected = content.includes('[otel]') && content.includes(`localhost:${port}`);
-      } catch {}
-    } else if (preset.presetId === 'gemini-cli') {
-      try {
-        const s = JSON.parse(readFileSync(join(home, '.gemini', 'settings.json'), 'utf8'));
-        detected = !!s.telemetry?.enabled && (s.telemetry?.otlpEndpoint || '').includes(`localhost:${port}`);
-      } catch {}
-    } else if (preset.presetId === 'opencode') {
-      detected = existsSync(join(opencodePluginDir, 'clideck-bridge.js')) || existsSync(join(opencodePluginDir, 'termix-bridge.js'));
-    } else { continue; }
-    if (detected !== !!cmd.telemetryEnabled) {
-      cmd.telemetryEnabled = detected;
-      cmd.telemetryStatus = detected ? { ok: true } : null;
-      changed = true;
+  const attemptedRepairs = new Set();
+
+  for (let pass = 0; pass < 2; pass++) {
+    let repairedAny = false;
+    for (const cmd of c.commands || []) {
+      const preset = findPresetForCommand(cmd.command);
+      if (!preset) continue;
+      let detected = false;
+      let reason = '';
+      if (preset.presetId === 'claude-code') {
+        try {
+          const s = JSON.parse(readFileSync(join(home, '.claude', 'settings.json'), 'utf8'));
+          const hooks = s.hooks || {};
+          detected = hasExistingHook(hooks.UserPromptSubmit, 'claude-hook.js', 'start')
+                  && hasExistingHook(hooks.Stop, 'claude-hook.js', 'stop')
+                  && hasExistingHook(hooks.StopFailure, 'claude-hook.js', 'stop')
+                  && hasExistingHook(hooks.PreToolUse, 'claude-hook.js', 'menu')
+                  && hooks.Notification?.some(h => h.matcher === 'idle_prompt' && hasExistingHook([h], 'claude-hook.js', 'idle'));
+          if (!detected) reason = 'Needs re-patch';
+        } catch {}
+      } else if (preset.presetId === 'codex') {
+        try {
+          const content = readFileSync(join(home, '.codex', 'config.toml'), 'utf8');
+          detected = codexConfigLooksHealthy(content, port);
+          if (!detected) reason = 'Needs re-patch';
+        } catch {}
+      } else if (preset.presetId === 'gemini-cli') {
+        try {
+          const s = JSON.parse(readFileSync(join(home, '.gemini', 'settings.json'), 'utf8'));
+          const hooks = s.hooks || {};
+          detected = hasExistingHook(hooks.BeforeAgent, 'gemini-hook.js', 'start')
+                  && hasExistingHook(hooks.AfterAgent, 'gemini-hook.js', 'stop')
+                  && hasExistingHook(hooks.SessionEnd, 'gemini-hook.js', 'stop')
+                  && hasExistingHook(hooks.BeforeTool, 'gemini-hook.js', 'menu');
+          if (!detected) reason = 'Needs re-patch';
+        } catch {}
+      } else if (preset.presetId === 'opencode') {
+        detected = existsSync(join(opencodePluginDir, 'clideck-bridge.js')) || existsSync(join(opencodePluginDir, 'termix-bridge.js'));
+        if (!detected) reason = 'Needs re-patch';
+      } else { continue; }
+      if (preset.available && preset.minVersion && !preset.versionOk) {
+        detected = false;
+        reason = `Update required (${preset.minVersion}+)`;
+      } else if (!detected && cmd.telemetryEnabled && preset.telemetryAutoSetup && preset.available && preset.versionOk && !attemptedRepairs.has(preset.presetId)) {
+        attemptedRepairs.add(preset.presetId);
+        const repaired = applyTelemetryConfig(preset);
+        if (repaired.success) {
+          repairedAny = true;
+          continue;
+        }
+      }
+      const nextEnabled = detected || (!!cmd.telemetryEnabled && !reason.startsWith('Update required'));
+      const nextStatus = detected ? { ok: true } : { ok: false, error: reason || 'Needs setup' };
+      if (cmd.telemetryEnabled !== nextEnabled || JSON.stringify(cmd.telemetryStatus || null) !== JSON.stringify(nextStatus)) {
+        cmd.telemetryEnabled = nextEnabled;
+        cmd.telemetryStatus = nextStatus;
+        changed = true;
+      }
+      preset.health = detected ? { ok: true } : { ok: false, reason: reason || 'Needs setup' };
     }
+    if (!repairedAny) break;
   }
   if (changed) console.log('Config: synced telemetry/plugin state from detected config files');
   return changed;
@@ -143,6 +244,7 @@ function onConnection(ws) {
   ws.send(JSON.stringify({ type: 'sessions.resumable', list: sessions.getResumable(cfg) }));
   ws.send(JSON.stringify({ type: 'transcript.cache', cache: transcript.getCache() }));
   ws.send(JSON.stringify({ type: 'plugins', list: plugins.getInfo() }));
+  ws.send(JSON.stringify({ type: 'pills', list: plugins.getPills() }));
   sessions.sendBuffers(ws);
 
   ws.on('message', (raw) => {
@@ -161,14 +263,65 @@ function onConnection(ws) {
       case 'input':                sessions.input(msg); break;
       case 'session.statusReport':
         if (sessions.getSessions().has(msg.id)) {
-          sessions.broadcast({ type: 'session.status', id: msg.id, working: !!msg.working });
-          plugins.notifyStatus(msg.id, !!msg.working);
+          sessions.broadcast({ type: 'session.status', id: msg.id, working: !!msg.working, source: 'client' });
         }
         break;
-      case 'terminal.buffer':
-        require('./transcript').storeBuffer(msg.id, msg.lines);
-        sessions.broadcast({ type: 'screen.updated', id: msg.id });
+      case 'terminal.buffer': {
+        const transcript = require('./transcript');
+        const sess = sessions.getSessions().get(msg.id);
+        if (sess) {
+          transcript.updateAgentCandidate(msg.id, sess.presetId, msg.lines);
+          if (!sess.working && sess._finalizeOnIdle) {
+            sess._finalizeOnIdle = false;
+            // if (sess.presetId === 'claude-code') {
+            //   console.log(`[claude] terminal.buffer finalize session=${msg.id.slice(0,8)} lines=${msg.lines?.length || 0}`);
+            // }
+            transcript.commitAgentCandidate(msg.id, sess.presetId);
+          }
+          let choices = require('./transcript').detectMenu(msg.lines, sess.presetId);
+          // Codex: only trust menu detection if last OTEL event was response.completed
+          if (choices && sess.presetId === 'codex') {
+            const last = require('./telemetry-receiver').getLastEvent(msg.id);
+            if (!last.startsWith('codex.sse_event:response.completed')) {
+              // console.log(`[codex] menu rejected — lastEvent=${last} session=${msg.id.slice(0,8)}`);
+              choices = null;
+            } else {
+              // console.log(`[codex] menu accepted session=${msg.id.slice(0,8)}`);
+            }
+          }
+          if (choices && sess.presetId === 'claude-code' && msg.menuVersion && (sess._menuConsumedVersion || 0) >= msg.menuVersion) {
+            // console.log(`[claude] menu ignored stale version=${msg.menuVersion} consumed=${sess._menuConsumedVersion || 0} session=${msg.id.slice(0,8)}`);
+            choices = null;
+          }
+          let key = choices ? JSON.stringify(choices) : '';
+          // Claude can keep rendering the same approval menu briefly after Enter.
+          // Once that exact menu was approved, ignore repeated detections of the
+          // same signature until the next real turn starts.
+          if (choices && sess.presetId === 'claude-code' && key === (sess._resolvedMenuKey || '')) {
+            // console.log(`[claude] menu ignored resolved key session=${msg.id.slice(0,8)}`);
+            choices = null;
+            key = '';
+          }
+          // Auto-approve: send Enter immediately when menu detected
+          if (choices && plugins.shouldAutoApproveMenu(msg.id)) {
+            setTimeout(() => sessions.input({ id: msg.id, data: '\r' }), 500);
+          }
+          if (key !== (sess._menuKey || '')) {
+            sess._menuKey = key;
+            sessions.broadcast({ type: 'session.menu', id: msg.id, choices: choices || [] });
+            if (choices) {
+              if (sess.presetId === 'claude-code' && msg.menuVersion) sess._menuActiveVersion = msg.menuVersion;
+              // if (sess.presetId === 'claude-code') {
+              //   console.log(`[claude] menu detected session=${msg.id.slice(0,8)} choices=${choices.length} version=${msg.menuVersion || 0}`);
+              // }
+              plugins.notifyMenu(msg.id, choices);
+              if (sess.presetId === 'codex') require('./telemetry-receiver').cancelCodexMenuPoll(msg.id);
+              sessions.broadcast({ type: 'session.status', id: msg.id, working: false, source: 'menu' });
+            }
+          }
+        }
         break;
+      }
       case 'resize':               sessions.resize(msg); break;
       case 'rename':          sessions.rename(msg); break;
       case 'close':           sessions.close(msg, cfg); break;
@@ -179,6 +332,7 @@ function onConnection(ws) {
 
       case 'checkAvailability':
         checkAvailability();
+        if (detectTelemetryConfig(cfg)) config.save(cfg);
         ws.send(JSON.stringify({ type: 'presets', presets }));
         break;
 
@@ -200,19 +354,21 @@ function onConnection(ws) {
       case 'telemetry.autosetup': {
         const preset = presets.find(p => p.presetId === msg.presetId);
         if (!preset?.telemetryAutoSetup) break;
-        // Only allow if caller has a live session using this preset's command
-        const liveSessions = sessions.list();
-        const hasLive = liveSessions.some(s => {
+        // Only allow if caller has a live session using this preset's command,
+        // OR the preset is configured in cfg.commands (user-initiated setup from UI).
+        const hasLive = sessions.list().some(s => {
           const cmd = cfg.commands.find(c => c.id === s.commandId);
           return cmd && usesPreset(cmd.command, preset.presetId);
         });
-        if (!hasLive) break;
+        const hasConfigured = (cfg.commands || []).some(cmd => usesPreset(cmd.command, preset.presetId));
+        if (!hasLive && !hasConfigured) break;
         const result = applyTelemetryConfig(preset);
-        // Persist telemetry state in config
         for (const cmd of cfg.commands) {
           if (usesPreset(cmd.command, preset.presetId)) {
             cmd.telemetryEnabled = result.success;
             cmd.telemetryStatus = result.success ? { ok: true } : { ok: false, error: result.message };
+            // Enable the agent when setup succeeds, disable if it fails
+            if (result.success) cmd.enabled = true;
           }
         }
         config.save(cfg);
@@ -276,17 +432,56 @@ function onConnection(ws) {
         }
         cfg.projects = cfg.projects.filter(p => p.id !== msg.id);
         config.save(cfg);
+        plugins.notifyConfig(cfg);
         sessions.broadcast({ type: 'config', config: configForClient() });
+        break;
+      }
+
+      case 'project.openPath': {
+        const proj = cfg.projects?.find(p => p.id === msg.id);
+        if (!proj?.path) {
+          ws.send(JSON.stringify({ type: 'project.openPath.result', id: msg.id, success: false, error: 'Project path is not set' }));
+          break;
+        }
+        const cmd = process.platform === 'darwin'
+          ? 'open'
+          : process.platform === 'win32'
+            ? 'explorer'
+            : 'xdg-open';
+        execFile(cmd, [proj.path], { shell: process.platform === 'win32' }, (err) => {
+          ws.send(JSON.stringify({
+            type: 'project.openPath.result',
+            id: msg.id,
+            success: !err,
+            error: err ? err.message : '',
+          }));
+        });
         break;
       }
 
       case 'dirs.list': {
         const requestedPath = msg.path || cfg.defaultPath;
         const target = expandHomePath(requestedPath);
-        const result = listDirs(target);
+        const result = listDirs(target, !!msg.showHidden);
         const entries = Array.isArray(result) ? result : [];
         const error = result.error || undefined;
         ws.send(JSON.stringify({ type: 'dirs', path: target, entries, error }));
+        break;
+      }
+
+      case 'dirs.mkdir': {
+        const name = (msg.name || '').trim();
+        if (!name || name.includes('/') || name.includes('\\') || name === '.' || name === '..') {
+          ws.send(JSON.stringify({ type: 'dirs.mkdir', success: false, error: 'Invalid folder name' }));
+          break;
+        }
+        const dirPath = join(msg.parent, name);
+        try {
+          mkdirSync(dirPath);
+          ws.send(JSON.stringify({ type: 'dirs.mkdir', success: true, path: dirPath }));
+        } catch (e) {
+          ws.send(JSON.stringify({ type: 'dirs.mkdir', success: false, error: e.message }));
+        }
         break;
       }
 
@@ -295,6 +490,18 @@ function onConnection(ws) {
         sessions.broadcast({ type: 'plugins', list: plugins.getInfo() });
         break;
 
+      case 'plugin.install': {
+        ws.send(JSON.stringify({ type: 'plugin.install.progress', pluginId: msg.pluginId }));
+        plugins.installPlugin(msg.pluginId, (err) => {
+          if (err) {
+            ws.send(JSON.stringify({ type: 'plugin.install.result', pluginId: msg.pluginId, success: false, error: err.message }));
+          } else {
+            sessions.broadcast({ type: 'plugins', list: plugins.getInfo() });
+            ws.send(JSON.stringify({ type: 'plugin.install.result', pluginId: msg.pluginId, success: true }));
+          }
+        });
+        break;
+      }
       case 'plugin.delete': {
         const result = plugins.removePlugin(msg.pluginId);
         if (result.success) {
@@ -304,6 +511,10 @@ function onConnection(ws) {
         }
         break;
       }
+
+      case 'pill.getLogs':
+        ws.send(JSON.stringify({ type: 'pill.logs', id: msg.id, logs: plugins.getPillLogs(msg.id) }));
+        break;
 
       case 'remote.status': {
         let installed = false;
@@ -339,8 +550,7 @@ function onConnection(ws) {
       }
 
       case 'remote.getHistory': {
-        const turns = transcript.getScreenTurns(msg.id, sessions.getSessions().get(msg.id)?.presetId);
-        ws.send(JSON.stringify({ type: 'remote.history', id: msg.id, turns: turns || [] }));
+        ws.send(JSON.stringify({ type: 'remote.history', id: msg.id, turns: transcript.getTurns(msg.id, 20, 'end') }));
         break;
       }
 
@@ -372,15 +582,55 @@ function applyTelemetryConfig(preset) {
   const home = os.homedir();
 
   try {
+    if (preset.presetId === 'claude-code') {
+      const configPath = join(home, '.claude', 'settings.json');
+      let settings = {};
+      if (existsSync(configPath)) {
+        try { settings = JSON.parse(readFileSync(configPath, 'utf8')); } catch {}
+      }
+      const hooks = settings.hooks || {};
+      const hookCmd = (route) => `"${process.execPath.replace(/\\/g, '/')}" "${join(__dirname, 'bin', 'claude-hook.js').replace(/\\/g, '/')}" ${port} ${route}`;
+      const clideckHook = (route) => ({ hooks: [{ type: 'command', command: hookCmd(route) }] });
+      const hasClideck = (arr, path) => arr?.some(h => h.hooks?.some(x => x.command === hookCmd(path)));
+      if (hasClideck(hooks.UserPromptSubmit, 'start') && hasClideck(hooks.Stop, 'stop') && hasClideck(hooks.StopFailure, 'stop') && hasClideck(hooks.PreToolUse, 'menu') && hooks.Notification?.some(h => h.matcher === 'idle_prompt' && h.hooks?.some(x => x.command === hookCmd('idle')))) {
+        return { success: true, message: 'Already configured' };
+      }
+      const stripOld = (arr) => (arr || []).filter(h => !h.hooks?.some(x => x.url?.includes('/hook/claude/') || x.command?.includes('claude-hook.js')));
+      hooks.UserPromptSubmit = stripOld(hooks.UserPromptSubmit);
+      hooks.Stop = stripOld(hooks.Stop);
+      hooks.StopFailure = stripOld(hooks.StopFailure);
+      hooks.PreToolUse = stripOld(hooks.PreToolUse);
+      hooks.Notification = stripOld(hooks.Notification);
+      if (!hasClideck(hooks.UserPromptSubmit, 'start')) hooks.UserPromptSubmit = [...(hooks.UserPromptSubmit || []), clideckHook('start')];
+      if (!hasClideck(hooks.Stop, 'stop')) hooks.Stop = [...(hooks.Stop || []), clideckHook('stop')];
+      if (!hasClideck(hooks.StopFailure, 'stop')) hooks.StopFailure = [...(hooks.StopFailure || []), clideckHook('stop')];
+      if (!hasClideck(hooks.Notification, 'idle')) hooks.Notification = [...(hooks.Notification || []), { matcher: 'idle_prompt', ...clideckHook('idle') }];
+      if (!hasClideck(hooks.PreToolUse, 'menu')) hooks.PreToolUse = [...(hooks.PreToolUse || []), clideckHook('menu')];
+      settings.hooks = hooks;
+      mkdirSync(dirname(configPath), { recursive: true });
+      writeFileSync(configPath, JSON.stringify(settings, null, 2) + '\n');
+      return { success: true, message: 'Added hooks to ~/.claude/settings.json — Claude will ask for one-time approval' };
+    }
+
     if (preset.presetId === 'codex') {
       const configPath = join(home, '.codex', 'config.toml');
+      const hooksPath = join(home, '.codex', 'hooks.json');
       let content = '';
       if (existsSync(configPath)) content = readFileSync(configPath, 'utf8');
-      if (content.includes('[otel]')) return { success: true, message: 'Already configured' };
-      const section = `\n[otel]\nexporter = { otlp-http = { endpoint = "http://localhost:${port}/v1/logs", protocol = "json" } }\n`;
+      const hasOtel = content.includes('[otel]');
+      const hasNotify = /^\s*notify\s*=.*notify-helper/m.test(content);
+      const hasWrongOtel = content.includes(`endpoint = "http://localhost:${port}/v1/logs"`);
+      if (hasOtel && hasNotify && !hasWrongOtel && !existsSync(hooksPath) && !/(^|\n)\[features\][\s\S]*?codex_hooks\s*=/.test(content)) {
+        return { success: true, message: 'Already configured' };
+      }
+      const notifyHelperPath = join(__dirname, 'bin', 'notify-helper.js').replace(/\\/g, '/');
+      const nextContent = upsertCodexConfig(content, process.execPath.replace(/\\/g, '/'), notifyHelperPath, port);
+      const valid = validateCodexConfigToml(nextContent);
+      if (!valid.ok) return { success: false, message: valid.error };
       mkdirSync(dirname(configPath), { recursive: true });
-      writeFileSync(configPath, content.trimEnd() + '\n' + section);
-      return { success: true, message: 'Added [otel] section to ~/.codex/config.toml' };
+      writeFileSync(configPath, nextContent);
+      if (existsSync(hooksPath)) try { unlinkSync(hooksPath); } catch {}
+      return { success: true, message: 'Added otel + notify to ~/.codex/config.toml' };
     }
 
     if (preset.presetId === 'gemini-cli') {
@@ -389,20 +639,26 @@ function applyTelemetryConfig(preset) {
       if (existsSync(configPath)) {
         try { settings = JSON.parse(readFileSync(configPath, 'utf8')); } catch {}
       }
-      if (settings.telemetry?.enabled && settings.telemetry?.otlpEndpoint) {
+      const hooks = settings.hooks || {};
+      const helperPath = join(__dirname, 'bin', 'gemini-hook.js').replace(/\\/g, '/');
+      const nodePath = process.execPath.replace(/\\/g, '/');
+      const geminiHook = (route) => ({
+        matcher: '*',
+        hooks: [{ type: 'command', command: `"${nodePath}" "${helperPath}" ${port} ${route}`, name: `clideck-${route}`, timeout: 5000 }],
+      });
+      const has = (arr, route) => arr?.some(h => h.hooks?.some(x => x.command?.includes('gemini-hook.js') && x.command?.includes(` ${route}`)));
+      if (has(hooks.BeforeAgent, 'start') && has(hooks.AfterAgent, 'stop') && has(hooks.SessionEnd, 'stop') && has(hooks.BeforeTool, 'menu')) {
         return { success: true, message: 'Already configured' };
       }
-      settings.telemetry = {
-        ...settings.telemetry,
-        enabled: true,
-        target: 'local',
-        otlpEndpoint: `http://localhost:${port}/v1/logs`,
-        otlpProtocol: 'http',
-        logPrompts: true,
-      };
+      if (!has(hooks.BeforeAgent, 'start')) hooks.BeforeAgent = [...(hooks.BeforeAgent || []), geminiHook('start')];
+      if (!has(hooks.AfterAgent, 'stop')) hooks.AfterAgent = [...(hooks.AfterAgent || []), geminiHook('stop')];
+      if (!has(hooks.SessionEnd, 'stop')) hooks.SessionEnd = [...(hooks.SessionEnd || []), geminiHook('stop')];
+      if (!has(hooks.BeforeTool, 'menu')) hooks.BeforeTool = [...(hooks.BeforeTool || []), geminiHook('menu')];
+      settings.hooks = hooks;
+      if (settings.telemetry?.target === 'local' && String(settings.telemetry?.otlpEndpoint || '').includes(`localhost:${port}`)) delete settings.telemetry;
       mkdirSync(dirname(configPath), { recursive: true });
       writeFileSync(configPath, JSON.stringify(settings, null, 2) + '\n');
-      return { success: true, message: 'Added telemetry section to ~/.gemini/settings.json' };
+      return { success: true, message: 'Added CliDeck hooks to ~/.gemini/settings.json' };
     }
 
     if (preset.presetId === 'opencode') {
@@ -425,14 +681,34 @@ function removeTelemetryConfig(preset) {
   const home = os.homedir();
 
   try {
+    if (preset.presetId === 'claude-code') {
+      const configPath = join(home, '.claude', 'settings.json');
+      if (!existsSync(configPath)) return { success: true, message: 'No config file to clean' };
+      let settings = {};
+      try { settings = JSON.parse(readFileSync(configPath, 'utf8')); } catch {}
+      if (!settings.hooks) return { success: true, message: 'No hooks to remove' };
+      for (const event of ['UserPromptSubmit', 'Stop', 'StopFailure', 'Notification', 'PreToolUse']) {
+        const arr = settings.hooks[event];
+        if (!arr) continue;
+        settings.hooks[event] = arr.filter(h => !h.hooks?.some(x => x.url?.includes('/hook/claude/') || x.command?.includes('claude-hook.js')));
+        if (!settings.hooks[event].length) delete settings.hooks[event];
+      }
+      if (!Object.keys(settings.hooks).length) delete settings.hooks;
+      writeFileSync(configPath, JSON.stringify(settings, null, 2) + '\n');
+      return { success: true, message: 'Removed CliDeck hooks from ~/.claude/settings.json' };
+    }
+
     if (preset.presetId === 'codex') {
       const configPath = join(home, '.codex', 'config.toml');
       if (!existsSync(configPath)) return { success: true, message: 'No config file to clean' };
       let content = readFileSync(configPath, 'utf8');
-      // Remove [otel] section and everything until the next section or EOF
       content = content.replace(/\n?\[otel\][^\[]*/, '');
+      content = content.replace(/\n?notify\s*=\s*\[.*?notify-helper.*?\]\s*/g, '');
+      content = content.replace(/\n?codex_hooks\s*=\s*(true|false)\s*/g, '\n');
       writeFileSync(configPath, content.trimEnd() + '\n');
-      return { success: true, message: 'Removed [otel] section from ~/.codex/config.toml' };
+      const hooksPath = join(home, '.codex', 'hooks.json');
+      if (existsSync(hooksPath)) try { unlinkSync(hooksPath); } catch {}
+      return { success: true, message: 'Removed otel + notify from ~/.codex config' };
     }
 
     if (preset.presetId === 'gemini-cli') {
@@ -440,9 +716,16 @@ function removeTelemetryConfig(preset) {
       if (!existsSync(configPath)) return { success: true, message: 'No config file to clean' };
       let settings = {};
       try { settings = JSON.parse(readFileSync(configPath, 'utf8')); } catch {}
-      delete settings.telemetry;
+      for (const event of ['BeforeAgent', 'AfterAgent', 'SessionEnd', 'BeforeTool']) {
+        const arr = settings.hooks?.[event];
+        if (!arr) continue;
+        settings.hooks[event] = arr.filter(h => !h.hooks?.some(x => x.command?.includes('gemini-hook.js')));
+        if (!settings.hooks[event].length) delete settings.hooks[event];
+      }
+      if (settings.hooks && !Object.keys(settings.hooks).length) delete settings.hooks;
+      if (settings.telemetry?.target === 'local' && String(settings.telemetry?.otlpEndpoint || '').includes('localhost:4000')) delete settings.telemetry;
       writeFileSync(configPath, JSON.stringify(settings, null, 2) + '\n');
-      return { success: true, message: 'Removed telemetry section from ~/.gemini/settings.json' };
+      return { success: true, message: 'Removed CliDeck hooks from ~/.gemini/settings.json' };
     }
 
     if (preset.presetId === 'opencode') {

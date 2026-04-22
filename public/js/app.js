@@ -1,9 +1,9 @@
 import { state, send } from './state.js';
-import { esc, findPresetForCommand } from './utils.js';
-import { addTerminal, removeTerminal, select, startRename, startProjectRename, setSessionTheme, openMenu, closeMenu, setStatus, updateMuteIndicator, updatePreview, markUnread, applyFilter, setTab, renderResumable, regroupSessions, toggleProjectCollapse, setSessionProject, estimateSize, restartComplete, positionMenu, setLayoutMode, fitVisibleTerminals, writeOutput } from './terminals.js';
+import { esc, binName, findPresetForCommand, resolveIconPath } from './utils.js';
+import { addTerminal, removeTerminal, select, startRename, startProjectRename, setSessionTheme, openMenu, closeMenu, setStatus, updateMuteIndicator, updatePreview, markUnread, applyFilter, setTab, renderResumable, regroupSessions, toggleProjectCollapse, setSessionProject, estimateSize, restartComplete, positionMenu, setLayoutMode, fitVisibleTerminals, writeOutput, addPill, updatePill, removePill, appendPillLog, setPillLogs, closePillLog } from './terminals.js';
 import { renderSettings, updateVersionFooter } from './settings.js';
 import { openCreator, closeCreator, refreshCreator } from './creator.js';
-import { handleDirsResponse, openFolderPicker } from './folder-picker.js';
+import { handleDirsResponse, handleMkdirResponse, openFolderPicker } from './folder-picker.js';
 import { confirmClose } from './confirm.js';
 import { applyTheme } from './profiles.js';
 import { toggleMode, applyMode } from './color-mode.js';
@@ -258,6 +258,9 @@ async function logout() {
   showAuthShell({ setupRequired: false, status: 'Signed out.' });
 }
 
+const shownAgentHealthToasts = new Set();
+let reconnectReplaySkip = null;
+
 function connect() {
   if (!state.auth.authenticated) return;
   if (state.ws && (state.ws.readyState === WebSocket.OPEN || state.ws.readyState === WebSocket.CONNECTING)) return;
@@ -266,13 +269,8 @@ function connect() {
   state.ws = new WebSocket(`${protocol}://${location.host}`);
 
   state.ws.onopen = () => {
-    for (const [, e] of state.terms) { e.ro.disconnect(); e.term.dispose(); e.el.remove(); }
-    state.terms.clear();
-    document.getElementById('session-list').innerHTML = '';
-    state.active = null;
-    state.layout.panes = [null, null];
-    state.layout.focusedPane = 0;
-    document.getElementById('empty').style.display = 'flex';
+    // Skip replaying output the client already has in its buffers
+    reconnectReplaySkip = new Set(state.terms.keys());
     send({ type: 'remote.status' });
     syncSplitToggleButton();
   };
@@ -297,23 +295,38 @@ function connect() {
         state.presets = msg.presets;
         renderSettings();
         refreshCreator();
+        for (const p of state.presets) {
+          if (p.available && p.health && !p.health.ok && p.health.reason !== 'Not installed' && !shownAgentHealthToasts.has(p.presetId)) {
+            shownAgentHealthToasts.add(p.presetId);
+            showToast(`${p.name}: ${p.health.reason}`, { id: `agent-health-${p.presetId}`, type: p.versionOk === false ? 'error' : 'warn', duration: 0, title: 'Agent Attention' });
+          }
+        }
         break;
       case 'sessions.resumable':
         state.resumable = msg.list;
         renderResumable();
         break;
       case 'sessions':
-        msg.list.forEach(s => addTerminal(s.id, s.name, s.themeId, s.commandId, s.projectId, s.muted, s.lastPreview));
-        if (msg.list.length) select(msg.list[0].id);
+        {
+          const liveIds = new Set(msg.list.map(s => s.id));
+          for (const id of [...state.terms.keys()]) {
+            if (!liveIds.has(id)) removeTerminal(id);
+          }
+          msg.list.forEach(s => addTerminal(s.id, s.name, s.themeId, s.commandId, s.projectId, s.muted, s.lastPreview, s.presetId));
+          if (!state.active || !state.terms.has(state.active)) {
+            if (msg.list.length) select(msg.list[0].id);
+          }
+        }
         break;
       case 'created':
-        if (!state.terms.has(msg.id)) addTerminal(msg.id, msg.name, msg.themeId, msg.commandId, msg.projectId, msg.muted, msg.lastPreview);
+        if (!state.terms.has(msg.id)) addTerminal(msg.id, msg.name, msg.themeId, msg.commandId, msg.projectId, msg.muted, msg.lastPreview, msg.presetId);
         select(msg.id);
         applyFilter();
         closeMobileSidebar();
         break;
       case 'output': {
         const entry = state.terms.get(msg.id);
+        if (msg.replay && reconnectReplaySkip?.has(msg.id) && entry) break;
         if (entry) {
           writeOutput(msg.id, msg.data);
           updatePreview(msg.id);
@@ -332,6 +345,24 @@ function connect() {
       case 'session.status':
         setStatus(msg.id, msg.working);
         break;
+      // Server requests terminal capture (e.g. after PermissionRequest hook)
+      case 'terminal.capture': {
+        const ce = state.terms.get(msg.id);
+        if (ce?.term) {
+          const buf = ce.term.buffer.active;
+          const lines = [];
+          for (let i = 0; i < buf.length; i++) { const line = buf.getLine(i); if (line) lines.push(line.translateToString(true)); }
+          send({ type: 'terminal.buffer', id: msg.id, lines, menuVersion: msg.menuVersion });
+        }
+        break;
+      }
+      case 'session.history': {
+        const entry = state.terms.get(msg.id);
+        if (msg.replay && reconnectReplaySkip?.has(msg.id) && entry) break;
+        if (entry && !entry.queue(msg.text + '\n')) entry.term.write(msg.text + '\n');
+        updatePreview(msg.id);
+        break;
+      }
       // Bridge preview text (OpenCode plugin)
       case 'session.preview': {
         const pe = state.terms.get(msg.id);
@@ -395,6 +426,9 @@ function connect() {
       case 'dirs':
         handleDirsResponse(msg);
         break;
+      case 'dirs.mkdir':
+        handleMkdirResponse(msg);
+        break;
       case 'session.theme': {
         const entry = state.terms.get(msg.id);
         if (entry) {
@@ -428,17 +462,18 @@ function connect() {
         if (!toast) break;
         const actionsEl = toast.querySelector('.setup-actions');
         if (msg.success) {
-          const sid = toast.dataset.sessionId;
-          const cmdId = toast.dataset.commandId;
+          const sid = (toast.dataset.sessionId && toast.dataset.sessionId !== 'null' && toast.dataset.sessionId !== 'undefined')
+            ? toast.dataset.sessionId
+            : '';
           actionsEl.innerHTML = `
             <div class="flex-1 flex items-center gap-1.5 text-xs text-emerald-400">
               <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5"><path d="M5 13l4 4L19 7"/></svg>
               Configured
             </div>
-            <button class="restart-btn px-3 py-2 text-xs font-medium bg-blue-600 hover:bg-blue-500 text-white rounded-lg transition-colors">Restart Session</button>
+            ${sid ? `<button class="restart-btn px-3 py-2 text-xs font-medium bg-blue-600 hover:bg-blue-500 text-white rounded-lg transition-colors">Restart Session</button>` : ''}
             <button class="dismiss-btn px-3 py-2 text-xs text-slate-500 hover:text-slate-300 transition-colors">Dismiss</button>`;
           actionsEl.querySelector('.dismiss-btn').onclick = () => toast.remove();
-          actionsEl.querySelector('.restart-btn').onclick = () => {
+          if (sid) actionsEl.querySelector('.restart-btn').onclick = () => {
             const entry = state.terms.get(sid);
             send({ type: 'session.restart', id: sid, themeId: entry?.themeId, cols: entry?.term?.cols, rows: entry?.term?.rows });
             toast.remove();
@@ -451,11 +486,54 @@ function connect() {
         }
         break;
       }
+      case 'project.openPath.result':
+        if (!msg.success) showToast(msg.error || 'Failed to open project folder', { type: 'error' });
+        break;
       case 'sessions.saved':
         flashSaveIndicator();
         break;
       case 'plugins':
         loadPlugins(msg.list);
+        break;
+      case 'plugin.install.result': {
+        const btn = document.querySelector(`.plugin-install-btn[data-plugin-id="${msg.pluginId}"]`);
+        if (!btn) break;
+        if (msg.success) {
+          btn.textContent = 'Installed';
+          btn.className = btn.className.replace('bg-blue-600 hover:bg-blue-500 text-white', 'bg-emerald-600/20 text-emerald-400 cursor-default');
+        } else {
+          btn.textContent = 'Failed';
+          btn.className = btn.className.replace('bg-blue-600 hover:bg-blue-500', 'bg-red-600/20 text-red-400 cursor-default');
+          btn.disabled = false;
+        }
+        break;
+      }
+      case 'pills':
+        {
+          const liveIds = new Set(msg.list.map(p => p.id));
+          for (const id of [...state.pills.keys()]) {
+            if (!liveIds.has(id)) removePill(id);
+          }
+          for (const p of msg.list) {
+            if (state.pills.has(p.id)) updatePill(p);
+            else addPill(p);
+          }
+        }
+        break;
+      case 'pill.added':
+        addPill(msg.pill);
+        break;
+      case 'pill.updated':
+        updatePill(msg.pill);
+        break;
+      case 'pill.removed':
+        removePill(msg.id);
+        break;
+      case 'pill.log':
+        appendPillLog(msg.id, msg.entry);
+        break;
+      case 'pill.logs':
+        setPillLogs(msg.id, msg.logs);
         break;
       case 'plugin.delete.error':
         showToast(`Failed to remove plugin: ${msg.error}`, { duration: 4000 });
@@ -479,7 +557,11 @@ function connect() {
         handleInstallDone(msg.success);
         break;
       case 'remote.update':
-        showRemoteUpdateToast(msg);
+        remoteUpdateInfo = msg?.available ? msg : null;
+        if (remotePreflight?.pending) {
+          remotePreflight.updateSeen = true;
+          finishRemotePreflight();
+        }
         break;
       default:
         if (msg.type?.startsWith('plugin.')) dispatchPluginMessage(msg);
@@ -817,6 +899,7 @@ document.getElementById('rail-logout').addEventListener('click', logout);
 
 // Sidebar events
 const sessionList = document.getElementById('session-list');
+sessionList.addEventListener('projects-rendered', () => renderProjectActions());
 
 sessionList.addEventListener('click', (e) => {
   closeCreator();
@@ -824,6 +907,12 @@ sessionList.addEventListener('click', (e) => {
 
   // Project header click — toggle collapse (skip if just finished a drag)
   const projHeader = e.target.closest('.project-header');
+  if (e.target.closest('.project-path-btn')) {
+    const projId = e.target.closest('.project-header')?.dataset.projectId;
+    if (projId) send({ type: 'project.openPath', id: projId });
+    return;
+  }
+  if (e.target.closest('.plugin-project-btn')) return; // handled by btn's own click listener
   if (projHeader && !e.target.closest('.project-menu-btn') && !wasDragging()) {
     toggleProjectCollapse(projHeader.dataset.projectId);
     return;
@@ -848,6 +937,9 @@ sessionList.addEventListener('click', (e) => {
     closeMobileSidebar();
     return;
   }
+
+  // Pill row click — handled by pill's own listener
+  if (e.target.closest('.pill-row')) return;
 
   const item = e.target.closest('.group');
   if (!item) return;
@@ -929,6 +1021,7 @@ document.querySelectorAll('.filter-tab').forEach(btn => {
 
 // Telemetry setup notification — shown once per agent type
 const shownSetup = new Set();
+document.addEventListener('clideck:setup', (e) => showTelemetrySetup(e.detail.commandId, null));
 function showTelemetrySetup(commandId, sessionId) {
   const cmd = state.cfg.commands.find(c => c.id === commandId);
   if (!cmd) return;
@@ -945,12 +1038,12 @@ function showTelemetrySetup(commandId, sessionId) {
   const [desc, ...codeParts] = setupText.split('\n\n');
   const code = codeParts.join('\n\n');
   const auto = preset.telemetryAutoSetup;
-  const iconSrc = preset.icon?.startsWith('/') ? preset.icon : null;
+  const iconSrc = preset.icon?.startsWith('/') ? resolveIconPath(preset.icon) : null;
   const title = preset.bridge ? 'Bridge Plugin' : 'Status Tracking';
 
   const toast = document.createElement('div');
   toast.dataset.setupPreset = preset.presetId;
-  toast.dataset.sessionId = sessionId;
+  if (sessionId) toast.dataset.sessionId = sessionId;
   toast.dataset.commandId = commandId;
   toast.className = 'fixed bottom-5 left-4 right-4 sm:left-auto sm:right-5 sm:w-auto z-[500] w-full max-w-[360px] bg-slate-800/95 backdrop-blur-sm border border-slate-700/60 rounded-xl shadow-2xl shadow-black/60';
   toast.style.opacity = '0';
@@ -1108,7 +1201,12 @@ function openPrevSessionsMenu(anchorEl) {
   const menu = document.createElement('div');
   menu.className = 'fixed z-[400] min-w-[160px] bg-slate-800 border border-slate-700 rounded-lg shadow-xl shadow-black/40 py-1';
 
-  const dormantIds = state.resumable.filter(s => !s.projectId).map(s => s.id);
+  // Clear exactly the dormant sessions currently rendered in "Previous Sessions".
+  // This keeps the action aligned with the UI even if a session has a stale projectId
+  // that no longer resolves to a real project group.
+  const dormantIds = [...document.querySelectorAll('#resumable-section [data-resumable-id]')]
+    .map(el => el.dataset.resumableId)
+    .filter(Boolean);
 
   menu.innerHTML = `
     <button class="pv-action flex items-center gap-2 w-full px-3 py-2 text-sm text-slate-300 hover:bg-slate-700 transition-colors text-left" data-action="clear-dormant">
@@ -1154,13 +1252,16 @@ function openProjectCreator() {
   card.id = 'project-creator';
   card.className = 'p-3 border-b border-slate-700/50 bg-slate-800/30';
   card.innerHTML = `
-    <div class="text-[10px] font-semibold uppercase tracking-wider text-slate-500 mb-2">New Project</div>
+    <div class="text-[10px] font-semibold uppercase tracking-wider text-slate-500 mb-1.5">Project folder</div>
     <div class="flex items-center gap-1.5 mb-2">
       <input id="pc-path" type="text" value="${esc(defaultPath)}" placeholder="Project folder path"
         class="flex-1 px-3 py-1.5 text-xs bg-slate-900 border border-slate-700 rounded-md text-slate-400 placeholder-slate-600 outline-none focus:border-blue-500 transition-colors font-mono">
       <button id="pc-browse" class="flex-shrink-0 w-7 h-7 flex items-center justify-center rounded-md border border-slate-700 text-slate-500 hover:text-slate-300 hover:bg-slate-700 transition-colors" title="Browse">
         ${FOLDER_SVG}
       </button>
+    </div>
+    <div class="text-[10px] font-semibold uppercase tracking-wider text-slate-500 mb-1.5">
+      Project name <span class="text-slate-600 font-medium normal-case tracking-normal">(auto-filled from folder name)</span>
     </div>
     <input id="pc-name" type="text" maxlength="35" placeholder="Project name"
       class="w-full px-3 py-2 text-sm bg-slate-900 border border-slate-700 rounded-md text-slate-200 placeholder-slate-500 outline-none focus:border-blue-500 transition-colors mb-2">
@@ -1276,15 +1377,34 @@ function renderPluginsPanel(list) {
   }
   const expanded = getPluginExpanded();
   const trashSvg = `<svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M14.74 9l-.346 9m-4.788 0L9.26 9m9.968-3.21c.342.052.682.107 1.022.166m-1.022-.165L18.16 19.673a2.25 2.25 0 01-2.244 2.077H8.084a2.25 2.25 0 01-2.244-2.077L4.772 5.79m14.456 0a48.108 48.108 0 00-3.478-.397m-12 .562c.34-.059.68-.114 1.022-.165m0 0a48.11 48.11 0 013.478-.397m7.5 0v-.916c0-1.18-.91-2.164-2.09-2.201a51.964 51.964 0 00-3.32 0c-1.18.037-2.09 1.022-2.09 2.201v.916m7.5 0a48.667 48.667 0 00-7.5 0"/></svg>`;
+  const defaultIcon = `<svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v2m6.36 1.64l-1.42 1.42M21 12h-2M17.94 17.94l-1.42-1.42M12 19v2M6.06 17.94l1.42-1.42M3 12h2M6.06 6.06l1.42 1.42"/><circle cx="12" cy="12" r="4"/></svg>`;
 
   container.innerHTML = list.map((p, i) => {
     const open = !!expanded[p.id];
+    const icon = p.icon || defaultIcon;
     const deleteBtn = p.bundled ? '' : `<div class="plugin-delete flex items-center justify-center w-6 h-6 rounded text-slate-600 hover:text-red-400 hover:bg-slate-700/50 cursor-pointer transition-colors flex-shrink-0" data-plugin-id="${esc(p.id)}" data-plugin-name="${esc(p.name)}" title="Remove plugin">${trashSvg}</div>`;
     const hasFooter = p.author || !p.bundled;
+
+    if (!p.installed) {
+      return `
+      <div class="plugin-card ${i > 0 ? 'border-t border-slate-700/50' : ''}">
+        <div class="px-4 py-3">
+          <div class="flex items-center gap-2">
+            <span class="text-slate-500 flex-shrink-0">${icon}</span>
+            <span class="flex-1 text-sm font-medium text-slate-400 truncate">${esc(p.name)}</span>
+            <span class="text-[10px] text-slate-600 flex-shrink-0">v${esc(p.version)}</span>
+            <button class="plugin-install-btn px-2.5 py-1 text-[11px] font-medium bg-blue-600 hover:bg-blue-500 text-white rounded-md transition-colors flex-shrink-0" data-plugin-id="${esc(p.id)}">Install</button>
+          </div>
+          ${p.description ? `<p class="text-[11px] text-slate-600 mt-0.5 leading-snug">${esc(p.description)}</p>` : ''}
+        </div>
+      </div>`;
+    }
+
     return `
     <div class="plugin-card ${i > 0 ? 'border-t border-slate-700/50' : ''}">
       <div class="plugin-toggle px-4 py-3 hover:bg-slate-800/50 transition-colors cursor-pointer" data-plugin-id="${esc(p.id)}">
         <div class="flex items-center gap-2">
+          <span class="text-slate-400 flex-shrink-0">${icon}</span>
           <span class="flex-1 text-sm font-medium text-slate-200 truncate">${esc(p.name)}</span>
           <span class="text-[10px] text-slate-500 flex-shrink-0">v${esc(p.version)}</span>
           <svg class="plugin-chevron w-4 h-4 text-slate-500 transition-transform duration-200 flex-shrink-0 ${open ? '' : 'collapsed'}" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path d="M19 9l-7 7-7-7"/></svg>
@@ -1294,7 +1414,7 @@ function renderPluginsPanel(list) {
       </div>
       <div class="plugin-body ${open ? '' : 'hidden'}">
         <div class="px-4 pb-3">
-          ${(p.settings || []).map(s => renderSettingField(p.id, s, p.settingValues[s.key] ?? s.default)).join('')}
+          ${(p.settings || []).map(s => renderSettingField(p.id, s, p.settingValues[s.key] ?? s.default, p.dynamicOptions)).join('')}
         </div>
       </div>
     </div>`;
@@ -1323,6 +1443,15 @@ function renderPluginsPanel(list) {
     });
   });
 
+  container.querySelectorAll('.plugin-install-btn').forEach(el => {
+    el.addEventListener('click', () => {
+      el.disabled = true;
+      el.textContent = 'Installing...';
+      el.className = el.className.replace('bg-blue-600 hover:bg-blue-500', 'bg-slate-700 cursor-wait');
+      send({ type: 'plugin.install', pluginId: el.dataset.pluginId });
+    });
+  });
+
   container.querySelectorAll('[data-setting]').forEach(el => {
     const pluginId = el.dataset.plugin;
     const key = el.dataset.setting;
@@ -1330,11 +1459,11 @@ function renderPluginsPanel(list) {
     if (el.type === 'checkbox') el.addEventListener('change', () => onChange(el.checked));
     else if (el.tagName === 'SELECT') el.addEventListener('change', () => onChange(el.value));
     else if (el.type === 'number') el.addEventListener('change', () => onChange(Number(el.value)));
-    else el.addEventListener('input', () => onChange(el.value));
+    else el.addEventListener('change', () => onChange(el.value));
   });
 }
 
-function renderSettingField(pluginId, setting, value) {
+function renderSettingField(pluginId, setting, value, dynamicOptions) {
   const id = `ps-${pluginId}-${setting.key}`;
   const attrs = `data-plugin="${esc(pluginId)}" data-setting="${esc(setting.key)}"`;
   const label = esc(setting.label || setting.key);
@@ -1346,12 +1475,17 @@ function renderSettingField(pluginId, setting, value) {
       <span class="text-xs text-slate-400">${label}</span>
     </label>${desc}`;
   }
-  if (setting.type === 'select') {
-    const opts = (setting.options || []).map(o => {
+  if (setting.type === 'select' || setting.type === 'dynamic-select') {
+    const source = setting.type === 'dynamic-select' ? (dynamicOptions?.[setting.key] || []) : (setting.options || []);
+    let opts = source.map(o => {
       const optVal = typeof o === 'object' ? o.value : o;
       const optLabel = typeof o === 'object' ? o.label : o;
       return `<option value="${esc(String(optVal))}" ${String(value) === String(optVal) ? 'selected' : ''}>${esc(String(optLabel))}</option>`;
     }).join('');
+    // Dynamic-select with no options yet: show the saved value so the control isn't blank
+    if (setting.type === 'dynamic-select' && !source.length && value) {
+      opts = `<option value="${esc(String(value))}" selected>${esc(String(value))}</option>`;
+    }
     return `<div class="mt-2">
       <label class="block text-xs text-slate-400 mb-1">${label}</label>
       <select id="${id}" ${attrs} class="w-full px-2 py-1.5 text-xs bg-slate-800 border border-slate-700 rounded-md text-slate-200 outline-none focus:border-blue-500 transition-colors">${opts}</select>
@@ -1390,6 +1524,15 @@ async function loadPlugins(list) {
   }
 
   renderPluginsPanel(list);
+
+  // Store project-header actions from plugins (used by regroupSessions to render icons)
+  state.projectActions = [];
+  for (const plugin of list) {
+    for (const action of plugin.actions || []) {
+      if (action.slot === 'project-header') state.projectActions.push({ ...action, pluginId: plugin.id });
+    }
+  }
+  renderProjectActions();
 
   // Render server-registered toolbar actions — also clears stale client toolbar buttons
   const toolbar = document.getElementById('plugin-toolbar');
@@ -1437,6 +1580,30 @@ async function loadPlugins(list) {
   }
 }
 
+// Render plugin-registered project header action buttons into all project groups
+function renderProjectActions() {
+  const actions = state.projectActions || [];
+  for (const slot of document.querySelectorAll('.project-plugin-actions')) {
+    slot.innerHTML = '';
+    const projId = slot.closest('.project-header')?.dataset.projectId;
+    if (!projId) continue;
+    for (const action of actions) {
+      const btn = document.createElement('button');
+      btn.className = 'project-plugin-action plugin-project-btn text-slate-600 hover:text-indigo-400 flex-shrink-0 p-0.5';
+      btn.title = action.title || '';
+      btn.innerHTML = action.icon || '';
+      btn.dataset.pluginId = action.pluginId;
+      btn.dataset.actionId = action.id;
+      btn.dataset.projectId = projId;
+      btn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        send({ type: `plugin.${action.pluginId}.${action.id}`, action: action.id, projectId: projId });
+      });
+      slot.appendChild(btn);
+    }
+  }
+}
+
 let saveTimer = null;
 function flashSaveIndicator() {
   const el = document.getElementById('save-indicator');
@@ -1481,6 +1648,9 @@ let remoteModalOpen = false;
 let remoteStatusPoll = null;
 let remoteConnectedAt = null;
 let remoteStatsTimer = null;
+let remoteUpdateInfo = null;
+let remotePreflight = null;
+let remoteLastStatus = null;
 
 function startRemotePoll() {
   stopRemotePoll();
@@ -1498,6 +1668,66 @@ function setRemotePane(pane) {
   for (const [k, el] of Object.entries(remotePanes)) {
     el.classList.toggle('hidden', k !== pane);
   }
+}
+
+function showRemoteIntro(opts = {}) {
+  const title = document.getElementById('remote-intro-title');
+  const text = document.getElementById('remote-intro-text');
+  const foot = document.getElementById('remote-intro-foot');
+  const btn = document.getElementById('remote-add');
+  title.textContent = opts.title || 'CliDeck Mobile Remote';
+  text.textContent = opts.text || 'Control your AI agents from your phone. See live status, send messages, and get notifications — all end-to-end encrypted.';
+  foot.innerHTML = opts.foot || 'Installs the <code class="text-slate-500">clideck-remote</code> package via npm';
+  btn.textContent = opts.button || 'Add to CliDeck';
+  setRemotePane('intro');
+}
+
+function showRemoteUpdateRequired() {
+  showRemoteIntro({
+    title: 'Update Required',
+    text: `Version ${remoteUpdateInfo.latest} is available. Update CliDeck Remote to continue with mobile pairing on this machine.`,
+    foot: `Installed: <code class="text-slate-500">${esc(remoteUpdateInfo.installed)}</code> · Latest: <code class="text-slate-500">${esc(remoteUpdateInfo.latest)}</code>`,
+    button: 'Update to Continue',
+  });
+}
+
+function finishRemotePreflight() {
+  if (!remotePreflight?.pending || !remotePreflight.statusSeen || !remotePreflight.updateSeen) return;
+  remotePreflight = null;
+  if (!remoteInstalled) {
+    showRemoteIntro();
+    return;
+  }
+  if (remoteUpdateInfo?.available) {
+    showRemoteUpdateRequired();
+    return;
+  }
+  if (remoteState === 'idle') {
+    remoteState = 'connecting';
+    setRemotePane('connecting');
+    send({ type: 'remote.pair' });
+    return;
+  }
+  if (remoteState === 'paired' && remoteLastStatus?.paired) {
+    setRemotePane('active');
+    setRemoteLock(true);
+    startRemoteStats(remoteLastStatus.pairedAt);
+    const deviceEl = document.getElementById('remote-device-info');
+    if (deviceEl) {
+      const parts = [remoteLastStatus.deviceName, remoteLastStatus.location].filter(Boolean);
+      deviceEl.textContent = parts.length ? parts.join(' · ') : '';
+    }
+    return;
+  }
+  if (remoteState === 'waiting' && remoteLastStatus?.connected && remoteLastStatus?.url) {
+    document.getElementById('remote-url-box').textContent = remoteLastStatus.url;
+    const qrImg = document.getElementById('remote-qr-img');
+    if (remoteLastStatus.qr && remoteLastStatus.qr.startsWith('data:')) { qrImg.src = remoteLastStatus.qr; qrImg.classList.remove('hidden'); }
+    else qrImg.classList.add('hidden');
+    setRemotePane('qr');
+    return;
+  }
+  setRemotePane(remoteState === 'paired' ? 'active' : remoteState === 'waiting' ? 'qr' : 'connecting');
 }
 
 function openRemoteModal() {
@@ -1588,10 +1818,12 @@ function updateRemoteButton() {
 }
 
 function handleRemoteStatus(msg) {
+  remoteLastStatus = msg;
   remoteInstalled = !!msg.installed;
   state.remoteVersion = msg.version || (msg.installed ? null : 'not installed');
   updateVersionFooter();
   const wasPaired = remoteState === 'paired';
+  const preflighting = !!remotePreflight?.pending;
   if (!msg.installed) {
     remoteState = 'idle';
     stopRemotePoll();
@@ -1600,7 +1832,7 @@ function handleRemoteStatus(msg) {
     const wasFresh = remoteState !== 'paired';
     remoteState = 'paired';
     if (!remoteStatusPoll) startRemotePoll();
-    if (wasFresh) {
+    if (wasFresh && !preflighting) {
 
       setRemotePane('active');
       setRemoteLock(true);
@@ -1620,13 +1852,20 @@ function handleRemoteStatus(msg) {
     if (msg.qr && msg.qr.startsWith('data:')) { qrImg.src = msg.qr; qrImg.classList.remove('hidden'); }
     else qrImg.classList.add('hidden');
     startRemotePoll();
-    if (remoteModalOpen) setRemotePane('qr');
+    if (!preflighting && remoteModalOpen) setRemotePane('qr');
   } else {
     remoteState = 'idle';
     stopRemotePoll();
     if (wasPaired) { stopRemoteStats(); setRemoteLock(false); }
   }
+  if (remoteUpdateInfo?.available && remoteModalOpen) {
+    showRemoteUpdateRequired();
+  }
   updateRemoteButton();
+  if (remotePreflight?.pending) {
+    remotePreflight.statusSeen = true;
+    finishRemotePreflight();
+  }
 }
 
 function handleRemotePaired(msg) {
@@ -1636,9 +1875,18 @@ function handleRemotePaired(msg) {
   const qrImg = document.getElementById('remote-qr-img');
   if (msg.qr && msg.qr.startsWith('data:')) { qrImg.src = msg.qr; qrImg.classList.remove('hidden'); }
   else qrImg.classList.add('hidden');
-  setRemotePane('qr');
   updateRemoteButton();
   startRemotePoll();
+  if (remoteUpdateInfo?.available && remoteModalOpen) {
+    showRemoteUpdateRequired();
+    return;
+  }
+  if (remotePreflight?.pending) {
+    remotePreflight.statusSeen = true;
+    finishRemotePreflight();
+    return;
+  }
+  setRemotePane('qr');
 }
 
 function handleRemoteUnpaired() {
@@ -1667,6 +1915,7 @@ function appendInstallLog(text) {
 function handleInstallDone(success) {
   if (success) {
     remoteInstalled = true;
+    remoteUpdateInfo = null;
     // Installed — go straight to pairing
     remoteState = 'connecting';
     setRemotePane('connecting');
@@ -1678,74 +1927,20 @@ function handleInstallDone(success) {
   }
 }
 
-let remoteUpdateShown = false;
-
-function showRemoteUpdateToast(msg) {
-  if (remoteUpdateShown) return;
-  remoteUpdateShown = true;
-
-  const toast = document.createElement('div');
-  toast.className = 'fixed bottom-5 right-5 z-[500] w-[360px] bg-slate-800/95 backdrop-blur-sm border border-slate-700/60 rounded-xl shadow-2xl shadow-black/60';
-  toast.style.cssText = 'opacity:0;transform:translateY(12px);transition:opacity 0.3s ease,transform 0.3s ease';
-
-  toast.innerHTML = `
-    <div class="flex items-center gap-2.5 px-4 pt-3.5 pb-1">
-      <svg class="w-5 h-5 flex-shrink-0 text-blue-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"/></svg>
-      <span class="text-[13px] font-semibold text-slate-200">CliDeck Remote Update</span>
-      <button class="dismiss-btn ml-auto w-6 h-6 flex items-center justify-center rounded-md text-slate-500 hover:text-slate-300 hover:bg-slate-700/50 transition-colors">
-        <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path d="M18 6L6 18M6 6l12 12"/></svg>
-      </button>
-    </div>
-    <p class="px-4 pt-1 pb-2.5 text-xs text-slate-400 leading-relaxed">
-      Version <span class="text-slate-300">${esc(msg.latest)}</span> is available (installed: ${esc(msg.installed)}).
-    </p>
-    <div class="px-4 pb-3.5 flex items-center gap-2">
-      <button class="update-btn flex-1 px-3 py-2 text-xs font-medium bg-blue-600 hover:bg-blue-500 text-white rounded-lg transition-colors">Update</button>
-      <button class="dismiss-btn px-3 py-2 text-xs text-slate-500 hover:text-slate-300 transition-colors">Later</button>
-    </div>`;
-
-  const dismiss = () => {
-    toast.style.opacity = '0';
-    toast.style.transform = 'translateY(12px)';
-    setTimeout(() => toast.remove(), 300);
-  };
-
-  toast.querySelectorAll('.dismiss-btn').forEach(b => {
-    b.onclick = () => { dismiss(); setTimeout(() => { remoteUpdateShown = false; }, 600000); };
-  });
-
-  toast.querySelector('.update-btn').onclick = () => {
-    dismiss();
-    remoteUpdateShown = false;
-    document.getElementById('remote-install-log').textContent = '';
-    setRemotePane('installing');
-    openRemoteModal();
-    send({ type: 'remote.install' });
-  };
-
-  document.body.appendChild(toast);
-  requestAnimationFrame(() => { toast.style.opacity = '1'; toast.style.transform = 'translateY(0)'; });
-}
-
 // Button click
 btnRemote.addEventListener('click', () => {
   if (remoteModalOpen && remoteState !== 'paired') { closeRemoteModal(); return; }
   if (remoteModalOpen) return; // paired — can't dismiss
   if (!remoteInstalled) {
-    setRemotePane('intro');
+    showRemoteIntro();
     document.getElementById('remote-install-log').textContent = '';
     openRemoteModal();
     return;
   }
-  if (remoteState === 'idle') {
-    remoteState = 'connecting';
-    setRemotePane('connecting');
-    openRemoteModal();
-    send({ type: 'remote.pair' });
-  } else {
-    setRemotePane(remoteState === 'paired' ? 'active' : remoteState === 'waiting' ? 'qr' : 'connecting');
-    openRemoteModal();
-  }
+  remotePreflight = { pending: true, statusSeen: false, updateSeen: false };
+  setRemotePane('connecting');
+  openRemoteModal();
+  send({ type: 'remote.status' });
 });
 
 // Install button

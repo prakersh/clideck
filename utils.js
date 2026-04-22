@@ -46,11 +46,11 @@ function resolveValidDir(dir) {
   return homedir();
 }
 
-function listDirs(path) {
+function listDirs(path, showHidden) {
   const expanded = expandHomePath(path);
   try {
     return readdirSync(expanded, { withFileTypes: true })
-      .filter(d => d.isDirectory() && !d.name.startsWith('.'))
+      .filter(d => d.isDirectory() && (showHidden || !d.name.startsWith('.')))
       .map(d => d.name)
       .sort();
   } catch (e) {
