@@ -116,31 +116,85 @@ function getAllIcons() {
   return icons;
 }
 
+function isValidCustomIcon(value) {
+  if (!value || !value.trim()) return false;
+  const v = value.trim();
+  if (v === 'terminal') return true;
+  if (/^https?:\/\/.+/.test(v)) return true;
+  // Single grapheme (emoji or character)
+  const graphemes = [...new Intl.Segmenter().segment(v)];
+  if (graphemes.length === 1) return true;
+  // Named built-in icons (path-based)
+  if (v.startsWith('/')) return true;
+  return false;
+}
+
 function openIconPicker(triggerEl, cardIdx) {
   closeIconPicker();
   const rect = triggerEl.getBoundingClientRect();
   const menu = document.createElement('div');
-  menu.className = 'fixed z-[500] bg-slate-800 border border-slate-600 rounded-lg shadow-xl shadow-black/40 p-2 flex gap-2';
+  menu.className = 'fixed z-[500] bg-slate-800 border border-slate-600 rounded-lg shadow-xl shadow-black/40 p-2';
   menu.style.top = (rect.bottom + 4) + 'px';
   menu.style.left = rect.left + 'px';
 
   const icons = getAllIcons();
-  menu.innerHTML = icons.map(ic =>
+  const iconsHTML = `<div class="flex gap-2 flex-wrap">` + icons.map(ic =>
     `<div class="icon-pick cursor-pointer rounded-lg p-1.5 hover:bg-slate-700 transition-colors" data-icon="${esc(ic.value)}" title="${esc(ic.label)}">
       ${agentIcon(ic.value)}
     </div>`
-  ).join('');
+  ).join('') + `
+    <div class="icon-pick-custom cursor-pointer rounded-lg p-1.5 hover:bg-slate-700 transition-colors flex items-center justify-center" title="Custom icon">
+      <div class="w-8 h-8 rounded bg-slate-700 flex items-center justify-center text-slate-400 text-xs font-medium select-none">...</div>
+    </div>
+  </div>
+  <div class="custom-icon-input-wrap hidden mt-2 flex gap-1.5">
+    <input type="text" class="custom-icon-input flex-1 px-2 py-1.5 text-sm bg-slate-900 border border-slate-700 rounded text-slate-200 placeholder-slate-500 outline-none focus:border-blue-500 transition-colors" placeholder="emoji, URL, or \`terminal\`">
+    <button class="custom-icon-apply px-2.5 py-1.5 text-xs bg-blue-600 hover:bg-blue-500 text-white rounded transition-colors">Apply</button>
+  </div>`;
 
+  menu.innerHTML = iconsHTML;
   document.body.appendChild(menu);
+
+  const customWrap = menu.querySelector('.custom-icon-input-wrap');
+  const customInput = menu.querySelector('.custom-icon-input');
+  const customApplyBtn = menu.querySelector('.custom-icon-apply');
+
+  menu.querySelector('.icon-pick-custom').addEventListener('click', () => {
+    customWrap.classList.toggle('hidden');
+    if (!customWrap.classList.contains('hidden')) {
+      customInput.value = state.cfg.commands[cardIdx]?.icon || '';
+      customInput.focus();
+    }
+  });
+
+  customInput.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') customApplyBtn.click();
+    if (e.key === 'Escape') closeIconPicker();
+    e.stopPropagation();
+  });
+
+  customApplyBtn.addEventListener('click', () => {
+    const val = customInput.value.trim();
+    if (!isValidCustomIcon(val)) {
+      customInput.classList.add('border-red-500');
+      customInput.title = 'Enter an emoji, http(s) URL, or "terminal"';
+      customInput.focus();
+      return;
+    }
+    state.cfg.commands[cardIdx].icon = val;
+    renderAgentList();
+    saveConfig();
+    closeIconPicker();
+  });
 
   const onClick = (e) => {
     const item = e.target.closest('.icon-pick');
-    if (item) {
+    if (item && !item.classList.contains('icon-pick-custom')) {
       state.cfg.commands[cardIdx].icon = item.dataset.icon;
       renderAgentList();
       saveConfig();
+      closeIconPicker();
     }
-    closeIconPicker();
   };
   const onOutside = (e) => {
     if (!menu.contains(e.target) && !triggerEl.contains(e.target)) closeIconPicker();
@@ -203,6 +257,7 @@ function renderAgentList() {
           ${agentIcon(c.icon)}
         </div>
         <input type="text" value="${esc(c.label)}" class="agent-name flex-1 px-2 py-1.5 text-sm bg-slate-900 border border-slate-700 rounded text-slate-200 placeholder-slate-500 outline-none focus:border-blue-500 transition-colors" placeholder="Agent name">
+        ${!c.presetId ? '<span class="flex-shrink-0 bg-slate-700 text-[10px] px-1.5 py-0.5 rounded text-slate-400">Custom</span>' : ''}
         <label class="flex items-center gap-1.5 text-xs text-slate-400 cursor-pointer select-none" title="Enabled">
           <input type="checkbox" ${c.enabled ? 'checked' : ''} class="agent-enabled accent-blue-500">
           On
@@ -255,18 +310,20 @@ function openPresetMenu(anchorEl) {
   menu.style.right = (window.innerWidth - rect.right) + 'px';
 
   const presets = state.presets || [];
-  menu.innerHTML = presets.map(p => `
+  menu.innerHTML = `
+    <div class="preset-item flex items-center gap-2.5 px-3 py-2 cursor-pointer hover:bg-blue-600/20 border-b border-slate-700 mb-1 transition-colors text-sm" data-preset="custom">
+      <div class="w-8 h-8 rounded bg-slate-700 flex items-center justify-center text-blue-400 text-lg font-bold">+</div>
+      <div class="flex-1">
+        <div class="text-slate-200 font-medium">Add custom binary or alias</div>
+        <div class="text-[11px] text-slate-500">Any binary path or shell alias</div>
+      </div>
+    </div>
+  ` + presets.map(p => `
     <div class="preset-item flex items-center gap-2.5 px-3 py-2 cursor-pointer hover:bg-slate-700 transition-colors text-sm" data-preset="${p.presetId}">
       ${agentIcon(p.icon)}
       <span class="text-slate-200">${esc(p.name)}</span>
     </div>
-  `).join('') + `
-    <div class="border-t border-slate-700 my-1"></div>
-    <div class="preset-item flex items-center gap-2.5 px-3 py-2 cursor-pointer hover:bg-slate-700 transition-colors text-sm" data-preset="custom">
-      <div class="w-8 h-8 rounded bg-slate-700 flex items-center justify-center text-slate-400 text-lg">+</div>
-      <span class="text-slate-200">Custom</span>
-    </div>
-  `;
+  `).join('');
 
   document.body.appendChild(menu);
 
@@ -565,5 +622,48 @@ document.getElementById('btn-browse-path').addEventListener('click', () => {
   openFolderPicker(current, (path) => {
     document.getElementById('cfg-default-path').value = path;
     saveConfig();
+  });
+});
+
+// ── Custom command shortcut from creator ──
+document.addEventListener('clideck:open-custom-command', () => {
+  // Open the settings panel if not already visible
+  const settingsPanel = document.getElementById('panel-settings');
+  const settingsOverlay = document.getElementById('settings-overlay');
+  const btnNew = document.getElementById('btn-new');
+  if (settingsPanel) {
+    document.querySelectorAll('#nav-rail ~ div, .panel').forEach(p => {
+      if (p.id && p.id.startsWith('panel-') && p.id !== 'panel-settings') {
+        p.classList.add('hidden'); p.classList.remove('flex');
+      }
+    });
+    settingsPanel.classList.remove('hidden');
+    settingsPanel.classList.add('flex');
+  }
+  if (settingsOverlay) settingsOverlay.classList.remove('hidden');
+  if (btnNew) { btnNew.classList.add('opacity-30', 'pointer-events-none'); }
+
+  // Switch to the agents category
+  switchCategory('agents');
+
+  // Add a new custom command and scroll to it
+  state.cfg.commands.push({
+    id: crypto.randomUUID(), label: '', icon: 'terminal', command: '',
+    enabled: true, defaultPath: '', isAgent: false, canResume: false,
+    resumeCommand: null, sessionIdPattern: null,
+    telemetryEnabled: false, telemetryStatus: null,
+    presetId: null, autoDetected: false,
+  });
+  renderAgentList();
+  saveConfig();
+
+  // Scroll to the last card and focus its name input
+  requestAnimationFrame(() => {
+    const cards = document.querySelectorAll('.agent-card');
+    const last = cards[cards.length - 1];
+    if (last) {
+      last.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+      last.querySelector('.agent-name')?.focus();
+    }
   });
 });

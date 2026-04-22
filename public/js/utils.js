@@ -55,8 +55,11 @@ export function agentIcon(icon, px = 32) {
   if (icon && icon.startsWith('/')) {
     return `<img src="${esc(resolveIconPath(icon))}" style="${s}" class="rounded object-cover flex-shrink-0" alt="">`;
   }
-  if (icon === 'terminal') {
+  if (icon && /^https?:\/\/.+/.test(icon)) {
+    return `<img src="${esc(icon)}" style="${s}" class="rounded object-cover flex-shrink-0" alt="" onerror="this.parentElement.innerHTML='${TERMINAL_SVG.replace(/'/g, "&#39;")}'">`;
+  }
+  if (!icon || icon === 'terminal') {
     return `<div style="${s}" class="rounded bg-slate-700 flex items-center justify-center text-slate-400 flex-shrink-0">${TERMINAL_SVG}</div>`;
   }
-  return `<div style="${s}" class="rounded bg-slate-700 flex items-center justify-center text-lg flex-shrink-0">${icon || '?'}</div>`;
+  return `<div style="${s}" class="rounded bg-slate-700 flex items-center justify-center text-lg flex-shrink-0">${esc(icon)}</div>`;
 }

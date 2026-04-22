@@ -191,6 +191,55 @@ test('transcripts migrate from jsonl and hydrate cache from SQLite after restart
   }
 });
 
+test('custom command with presetId null round-trips through config save and load', async () => {
+  const home = await makeHome();
+  try {
+    const customCommandId = 'custom-cmd-uuid-1234';
+    const result = await runNode(home, `
+      const config = require('./config');
+      const customCommand = {
+        id: '${customCommandId}',
+        presetId: null,
+        command: 'my-agent --flag',
+        label: 'My Agent',
+        icon: 'terminal',
+        isAgent: true,
+        canResume: false,
+        enabled: true,
+        resumeCommand: null,
+        sessionIdPattern: null,
+        defaultPath: '',
+        telemetryEnabled: false,
+        telemetryStatus: null,
+        autoDetected: false,
+      };
+      const cfg = config.load();
+      cfg.commands.push(customCommand);
+      config.save(cfg);
+      const reloaded = config.load();
+      const found = reloaded.commands.find(c => c.id === '${customCommandId}');
+      process.stdout.write('${RESULT_PREFIX}' + JSON.stringify({
+        found: !!found,
+        presetId: found ? found.presetId : undefined,
+        command: found ? found.command : undefined,
+        label: found ? found.label : undefined,
+        icon: found ? found.icon : undefined,
+        isAgent: found ? found.isAgent : undefined,
+        enabled: found ? found.enabled : undefined,
+      }) + '\\n');
+    `);
+
+    assert.ok(result.found, 'custom command should survive round-trip');
+    assert.equal(result.presetId, null, 'presetId should remain null');
+    assert.equal(result.command, 'my-agent --flag', 'command should be preserved');
+    assert.equal(result.label, 'My Agent', 'label should be preserved');
+    assert.equal(result.isAgent, true, 'isAgent should be preserved');
+    assert.equal(result.enabled, true, 'enabled should be preserved');
+  } finally {
+    await rm(home, { recursive: true, force: true });
+  }
+});
+
 test('tilde paths expand for resolveValidDir and listDirs', async () => {
   const home = await makeHome();
   try {

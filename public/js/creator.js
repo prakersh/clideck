@@ -53,6 +53,22 @@ function isPresetUnpatched(p) {
   return !cmd || !cmd.telemetryStatus?.ok;
 }
 
+function renderCustomCommandButtons() {
+  const customs = (state.cfg.commands || []).filter(c => !c.presetId && c.enabled !== false);
+  if (!customs.length) return '';
+  return `
+    <div class="mt-2 pt-2 border-t border-slate-700/50">
+      <div class="text-[10px] font-semibold uppercase tracking-wider text-slate-500 mb-1.5">Custom</div>
+      <div class="space-y-0.5">
+        ${customs.map(c => `
+          <button class="custom-cmd-btn w-full flex items-center gap-2.5 px-3 py-2 rounded-md hover:bg-slate-700/70 text-sm transition-colors text-left text-slate-300" data-cmd-id="${esc(c.id)}">
+            <span>${agentIcon(c.icon, 24)}</span>
+            <span class="flex-1 min-w-0 truncate">${esc(c.label || c.command)}</span>
+          </button>`).join('')}
+      </div>
+    </div>`;
+}
+
 function renderPresetButtons() {
   return sortedPresets().map(p => {
     if (isPresetMissing(p)) {
@@ -198,6 +214,13 @@ export function openCreator() {
     <div class="text-[10px] font-semibold uppercase tracking-wider text-slate-500 mb-1.5">Choose agent provider</div>
     <div id="creator-presets" class="space-y-0.5">
       ${renderPresetButtons()}
+      ${renderCustomCommandButtons()}
+    </div>
+    <div class="mt-2 pt-2 border-t border-slate-700/30">
+      <button id="creator-add-custom" class="w-full flex items-center gap-2 px-3 py-1.5 rounded-md text-xs text-slate-500 hover:text-slate-300 hover:bg-slate-700/50 transition-colors text-left">
+        <span class="text-base leading-none">+</span>
+        <span>Add custom binary or alias</span>
+      </button>
     </div>`;
 
   const list = document.getElementById('session-list');
@@ -294,6 +317,13 @@ export function openCreator() {
 
   // "Add" button for missing agents — opens install toaster
   card.addEventListener('click', (e) => {
+    // Handle "+ Add custom" button
+    if (e.target.closest('#creator-add-custom')) {
+      document.dispatchEvent(new CustomEvent('clideck:open-custom-command'));
+      closeCreator();
+      return;
+    }
+
     const installBtn = e.target.closest('.install-btn');
     if (installBtn) {
       const preset = state.presets.find(p => p.presetId === installBtn.dataset.preset);
@@ -313,6 +343,27 @@ export function openCreator() {
       document.dispatchEvent(new CustomEvent('clideck:setup', { detail: { commandId: cmd.id } }));
       return;
     }
+
+    // Handle custom command buttons
+    const customBtn = e.target.closest('.custom-cmd-btn');
+    if (customBtn) {
+      const cmdId = customBtn.dataset.cmdId;
+      const cmd = (state.cfg.commands || []).find(c => c.id === cmdId);
+      if (!cmd) return;
+      if (projTrigger && !projHidden.value) {
+        showToast('Choose a project or select `None (outside project hierarchy)`.', { title: 'Choose Project', type: 'warn' });
+        projTrigger.focus();
+        return;
+      }
+      const name = nameInput.value.trim() || fallbackName;
+      const cwd = cwdInput.value.trim() || undefined;
+      const projectId = projHidden?.value && projHidden.value !== NO_PROJECT_VALUE ? projHidden.value : undefined;
+      send({ type: 'create', commandId: cmd.id, name, cwd, projectId: projectId || undefined, ...estimateSize() });
+      saveMruSelection(cmd);
+      closeCreator();
+      return;
+    }
+
     const btn = e.target.closest('.preset-btn');
     if (!btn) return;
     const preset = state.presets.find(p => p.presetId === btn.dataset.preset);
@@ -332,7 +383,7 @@ export function openCreator() {
 
 export function refreshCreator() {
   const container = document.getElementById('creator-presets');
-  if (container) container.innerHTML = renderPresetButtons();
+  if (container) container.innerHTML = renderPresetButtons() + renderCustomCommandButtons();
 }
 
 export function closeCreator() {

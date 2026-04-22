@@ -236,7 +236,10 @@ function syncCommandWithPreset(cmd) {
   }
 
   if (!preset) {
-    delete cmd.presetId;
+    // Preserve explicit null presetId for user-created custom commands;
+    // only delete if it was never set (undefined) to avoid stripping intent.
+    if (cmd.presetId !== null) delete cmd.presetId;
+    else cmd.presetId = null;
     delete cmd.bridge;
     if (!cmd.icon) cmd.icon = 'terminal';
     if (cmd.telemetryEnabled === undefined) cmd.telemetryEnabled = false;
@@ -246,7 +249,9 @@ function syncCommandWithPreset(cmd) {
 
   const adoptDefaults = shouldAdoptPresetDefaults(cmd);
   cmd.presetId = preset.presetId;
-  cmd.icon = preset.icon;
+  // Only sync icon from preset when a preset is actually matched; do not
+  // overwrite a user-set custom icon on preset-less commands.
+  if (preset) cmd.icon = preset.icon;
   if (adoptDefaults) {
     cmd.isAgent = preset.isAgent;
     cmd.canResume = preset.canResume;
