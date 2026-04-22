@@ -18,3 +18,7 @@ npm-debug.log*
 
 # Work planning
 workplan.txt
+
+# Test/screenshot artifacts
+test-*.png
+.omc/
