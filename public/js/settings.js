@@ -1,5 +1,5 @@
 import { state, send } from './state.js';
-import { esc, debounce, agentIcon, findPresetForCommand } from './utils.js';
+import { esc, debounce, agentIcon, binName, findPresetForCommand } from './utils.js';
 import { openFolderPicker } from './folder-picker.js';
 
 // ── Category navigation ──
