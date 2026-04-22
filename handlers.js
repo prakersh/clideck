@@ -153,73 +153,66 @@ function codexConfigLooksHealthy(content, port) {
   return !!helperPath && existsSync(helperPath);
 }
 
+// Pure detection — NEVER mutates user CLI dotfiles.
+// ~/.claude/settings.json, ~/.codex/config.toml, ~/.gemini/settings.json
+// belong to the user. We only read them to report status; the user opts into
+// patching via the settings toggle or the "needs setup" toaster, which routes
+// through the explicit telemetry.autosetup / telemetry.configure handlers.
 function detectTelemetryConfig(c) {
   const home = os.homedir();
   const port = '4000';
   let changed = false;
-  const attemptedRepairs = new Set();
 
-  for (let pass = 0; pass < 2; pass++) {
-    let repairedAny = false;
-    for (const cmd of c.commands || []) {
-      const preset = findPresetForCommand(cmd.command);
-      if (!preset) continue;
-      let detected = false;
-      let reason = '';
-      if (preset.presetId === 'claude-code') {
-        try {
-          const s = JSON.parse(readFileSync(join(home, '.claude', 'settings.json'), 'utf8'));
-          const hooks = s.hooks || {};
-          detected = hasExistingHook(hooks.UserPromptSubmit, 'claude-hook.js', 'start')
-                  && hasExistingHook(hooks.Stop, 'claude-hook.js', 'stop')
-                  && hasExistingHook(hooks.StopFailure, 'claude-hook.js', 'stop')
-                  && hasExistingHook(hooks.PreToolUse, 'claude-hook.js', 'menu')
-                  && hooks.Notification?.some(h => h.matcher === 'idle_prompt' && hasExistingHook([h], 'claude-hook.js', 'idle'));
-          if (!detected) reason = 'Needs re-patch';
-        } catch {}
-      } else if (preset.presetId === 'codex') {
-        try {
-          const content = readFileSync(join(home, '.codex', 'config.toml'), 'utf8');
-          detected = codexConfigLooksHealthy(content, port);
-          if (!detected) reason = 'Needs re-patch';
-        } catch {}
-      } else if (preset.presetId === 'gemini-cli') {
-        try {
-          const s = JSON.parse(readFileSync(join(home, '.gemini', 'settings.json'), 'utf8'));
-          const hooks = s.hooks || {};
-          detected = hasExistingHook(hooks.BeforeAgent, 'gemini-hook.js', 'start')
-                  && hasExistingHook(hooks.AfterAgent, 'gemini-hook.js', 'stop')
-                  && hasExistingHook(hooks.SessionEnd, 'gemini-hook.js', 'stop')
-                  && hasExistingHook(hooks.BeforeTool, 'gemini-hook.js', 'menu');
-          if (!detected) reason = 'Needs re-patch';
-        } catch {}
-      } else if (preset.presetId === 'opencode') {
-        detected = existsSync(join(opencodePluginDir, 'clideck-bridge.js')) || existsSync(join(opencodePluginDir, 'termix-bridge.js'));
-        if (!detected) reason = 'Needs re-patch';
-      } else { continue; }
-      if (preset.available && preset.minVersion && !preset.versionOk) {
-        detected = false;
-        reason = `Update required (${preset.minVersion}+)`;
-      } else if (!detected && cmd.telemetryEnabled && preset.telemetryAutoSetup && preset.available && preset.versionOk && !attemptedRepairs.has(preset.presetId)) {
-        attemptedRepairs.add(preset.presetId);
-        const repaired = applyTelemetryConfig(preset);
-        if (repaired.success) {
-          repairedAny = true;
-          continue;
-        }
-      }
-      const nextEnabled = detected || (!!cmd.telemetryEnabled && !reason.startsWith('Update required'));
-      const nextStatus = detected ? { ok: true } : { ok: false, error: reason || 'Needs setup' };
-      if (cmd.telemetryEnabled !== nextEnabled || JSON.stringify(cmd.telemetryStatus || null) !== JSON.stringify(nextStatus)) {
-        cmd.telemetryEnabled = nextEnabled;
-        cmd.telemetryStatus = nextStatus;
-        changed = true;
-      }
-      preset.health = detected ? { ok: true } : { ok: false, reason: reason || 'Needs setup' };
+  for (const cmd of c.commands || []) {
+    const preset = findPresetForCommand(cmd.command);
+    if (!preset) continue;
+    let detected = false;
+    let reason = '';
+    if (preset.presetId === 'claude-code') {
+      try {
+        const s = JSON.parse(readFileSync(join(home, '.claude', 'settings.json'), 'utf8'));
+        const hooks = s.hooks || {};
+        detected = hasExistingHook(hooks.UserPromptSubmit, 'claude-hook.js', 'start')
+                && hasExistingHook(hooks.Stop, 'claude-hook.js', 'stop')
+                && hasExistingHook(hooks.StopFailure, 'claude-hook.js', 'stop')
+                && hasExistingHook(hooks.PreToolUse, 'claude-hook.js', 'menu')
+                && hooks.Notification?.some(h => h.matcher === 'idle_prompt' && hasExistingHook([h], 'claude-hook.js', 'idle'));
+        if (!detected) reason = 'Needs setup';
+      } catch { reason = 'Needs setup'; }
+    } else if (preset.presetId === 'codex') {
+      try {
+        const content = readFileSync(join(home, '.codex', 'config.toml'), 'utf8');
+        detected = codexConfigLooksHealthy(content, port);
+        if (!detected) reason = 'Needs setup';
+      } catch { reason = 'Needs setup'; }
+    } else if (preset.presetId === 'gemini-cli') {
+      try {
+        const s = JSON.parse(readFileSync(join(home, '.gemini', 'settings.json'), 'utf8'));
+        const hooks = s.hooks || {};
+        detected = hasExistingHook(hooks.BeforeAgent, 'gemini-hook.js', 'start')
+                && hasExistingHook(hooks.AfterAgent, 'gemini-hook.js', 'stop')
+                && hasExistingHook(hooks.SessionEnd, 'gemini-hook.js', 'stop')
+                && hasExistingHook(hooks.BeforeTool, 'gemini-hook.js', 'menu');
+        if (!detected) reason = 'Needs setup';
+      } catch { reason = 'Needs setup'; }
+    } else if (preset.presetId === 'opencode') {
+      detected = existsSync(join(opencodePluginDir, 'clideck-bridge.js')) || existsSync(join(opencodePluginDir, 'termix-bridge.js'));
+      if (!detected) reason = 'Needs setup';
+    } else { continue; }
+    if (preset.available && preset.minVersion && !preset.versionOk) {
+      detected = false;
+      reason = `Update required (${preset.minVersion}+)`;
     }
-    if (!repairedAny) break;
+    // Keep user's enabled flag as-is — detection does not flip it. Only
+    // explicit telemetry.configure calls may change telemetryEnabled.
+    const nextStatus = detected ? { ok: true } : { ok: false, error: reason || 'Needs setup' };
+    if (JSON.stringify(cmd.telemetryStatus || null) !== JSON.stringify(nextStatus)) {
+      cmd.telemetryStatus = nextStatus;
+      changed = true;
+    }
+    preset.health = detected ? { ok: true } : { ok: false, reason: reason || 'Needs setup' };
   }
-  if (changed) console.log('Config: synced telemetry/plugin state from detected config files');
+  if (changed) console.log('Config: refreshed telemetry/plugin detection state (no dotfile writes)');
   return changed;
 }
 
