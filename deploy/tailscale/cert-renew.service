@@ -1,0 +1,17 @@
+[Unit]
+Description=Renew Tailscale cert for clideck
+After=tailscaled.service
+Wants=tailscaled.service
+
+[Service]
+Type=oneshot
+EnvironmentFile=/etc/clideck/clideck.env
+# Derive the FQDN from the allowed-origins env var
+ExecStart=/bin/bash -c '\
+  FQDN=$${CLIDECK_ALLOWED_ORIGINS#https://}; \
+  cd /etc/clideck/tls && \
+  /usr/bin/tailscale cert "$$FQDN" && \
+  mv -f "$${FQDN}.crt" fullchain.pem && \
+  mv -f "$${FQDN}.key" privkey.pem && \
+  chmod 600 privkey.pem && \
+  systemctl reload-or-restart clideck'

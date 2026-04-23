@@ -1,0 +1,11 @@
+[Unit]
+Description=Monthly renewal of Tailscale cert for clideck
+
+[Timer]
+# Tailscale certs are 90 days; monthly renewal keeps well ahead.
+OnCalendar=monthly
+RandomizedDelaySec=6h
+Persistent=true
+
+[Install]
+WantedBy=timers.target

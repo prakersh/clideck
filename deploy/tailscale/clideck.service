@@ -1,0 +1,48 @@
+[Unit]
+Description=clideck (Tailscale HTTPS)
+After=network-online.target tailscaled.service
+Wants=network-online.target tailscaled.service
+
+[Service]
+Type=simple
+# If you run clideck as a dedicated user, uncomment + adjust:
+# User=clideck
+# Group=clideck
+
+# Env file is written by deploy/tailscale/setup.sh. Contents:
+#   CLIDECK_HOST=<tailnet-ip>
+#   CLIDECK_PORT=443
+#   CLIDECK_TLS_CERT_PATH=/etc/clideck/tls/fullchain.pem
+#   CLIDECK_TLS_KEY_PATH=/etc/clideck/tls/privkey.pem
+#   CLIDECK_ALLOWED_ORIGINS=https://<host>.<tailnet>.ts.net
+#   CLIDECK_PUBLIC_MODE=1
+#   CLIDECK_USERNAME=<your-user>
+#   CLIDECK_PASSWORD=<strong-password>
+#   CLIDECK_COOKIE_SECURE=1
+EnvironmentFile=/etc/clideck/clideck.env
+
+ExecStart=/usr/bin/env clideck
+
+# Graceful shutdown: clideck persists sessions on SIGTERM
+KillSignal=SIGTERM
+TimeoutStopSec=15
+Restart=on-failure
+RestartSec=3
+
+# Hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=read-only
+PrivateTmp=true
+ReadWritePaths=/etc/clideck
+# clideck stores its state under $HOME/.clideck — allow that too
+# (remove this line if you set User= to a dedicated account with its own HOME)
+ReadWritePaths=/root/.clideck /home
+
+# If you want to bind :443 as unprivileged user, pair this with:
+#   setcap 'cap_net_bind_service=+ep' $(readlink -f "$(command -v node)")
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+
+[Install]
+WantedBy=multi-user.target
