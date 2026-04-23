@@ -18,7 +18,7 @@
   <img src="assets/clideck-themes.jpg" width="720" alt="clideck dashboard">
 </p>
 
-clideck is a local app for running multiple AI coding agents without juggling terminals. Claude Code, Codex, Gemini CLI, and OpenCode all live in one browser window with a chat-style sidebar, live status, message previews, session resume, and projects to keep things organized. an autopilot routes work between agents automatically, and an E2E encrypted mobile relay gives full control over all agents from a phone.
+clideck is a local app for running multiple AI coding agents without juggling terminals. Claude Code, Codex, Gemini CLI, and OpenCode all live in one browser window with a chat-style sidebar, live status, message previews, session resume, and projects to keep things organized. an autopilot routes work between agents automatically, and a mobile-ready PWA gives full control over all agents from a phone (via direct HTTPS — e.g. Tailscale — no third-party relay).
 
 the main problem with using multiple agents is not starting them. it is managing them. terminals pile up, finished work gets missed, good sessions disappear after a restart. clideck does not sit in the middle rewriting prompts or output - it only watches lightweight status signals (OpenTelemetry) so it can tell which agent is working, which is idle, and which is waiting. everything runs locally, no data leaves your machine.
 
@@ -53,7 +53,7 @@ Or just run it once with `npx clideck`. Works on macOS and Windows. Node 18+. Li
   <img src="assets/autopilot.gif" width="720" alt="Autopilot routing work between agents">
 </p>
 
-**Mobile remote** - the agents keep running on the local machine. status, prompts, history, and replies stay available from a phone while away. E2E encrypted, no account needed.
+**Mobile PWA** - the agents keep running on the host machine. status, prompts, history, and replies stay available from a phone while away. Reach the host directly over HTTPS (Tailscale or your own TLS) — no third-party relay, no account.
 
 **Native terminals** - each session opens into its real terminal. keys go straight to the agent, nothing sits in the middle.
 

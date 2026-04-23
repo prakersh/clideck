@@ -23,7 +23,6 @@ export const state = {
     user: null,
     loggingOut: false,
   },
-  remoteVersion: null,
   mobileKeybar: {
     open: false,
     selectionMode: false,

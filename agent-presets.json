@@ -12,7 +12,7 @@
     "sessionIdPattern": "Session ID:\\s+([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})",
     "outputMarker": "⏺",
     "telemetryConfigPath": "~/.claude/settings.json",
-    "telemetrySetup": "Required for working/idle status, Autopilot, notifications, and mobile remote.\n\nCliDeck will add start/stop hooks to ~/.claude/settings.json. Claude will ask for one-time approval on next launch.",
+    "telemetrySetup": "Required for working/idle status, Autopilot, and notifications.\n\nCliDeck will add start/stop hooks to ~/.claude/settings.json. Claude will ask for one-time approval on next launch.",
     "telemetryAutoSetup": {
       "label": "Patch Claude"
     },
@@ -61,7 +61,7 @@
     "sessionIdPattern": "Session ID:\\s+([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})",
     "outputMarker": "✦",
     "telemetryConfigPath": "~/.gemini/settings.json",
-    "telemetrySetup": "Required for working/idle status, resume, Autopilot, notifications, and mobile remote.\n\nCliDeck will add BeforeAgent/AfterAgent/SessionEnd/BeforeTool hooks to ~/.gemini/settings.json.",
+    "telemetrySetup": "Required for working/idle status, resume, Autopilot, and notifications.\n\nCliDeck will add BeforeAgent/AfterAgent/SessionEnd/BeforeTool hooks to ~/.gemini/settings.json.",
     "telemetryAutoSetup": {
       "label": "Patch Gemini"
     }

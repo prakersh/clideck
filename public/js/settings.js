@@ -92,8 +92,6 @@ export function renderSettings() {
 export function updateVersionFooter() {
   const el = document.getElementById('version-clideck');
   if (el) el.textContent = state.cfg.version || '';
-  const remoteEl = document.getElementById('version-remote');
-  if (remoteEl) remoteEl.textContent = state.remoteVersion || '';
 }
 
 // ── CLI Agents ──

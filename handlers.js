@@ -37,11 +37,6 @@ for (const p of presets) {
   }
 }
 
-// Check for clideck-remote updates (cached, once per hour)
-let remoteUpdateCache = null;
-let remoteUpdateCheckedAt = 0;
-const REMOTE_UPDATE_INTERVAL = 3600000;
-
 function compareVersions(a, b) {
   const pa = String(a || '').split('.').map(n => parseInt(n, 10) || 0);
   const pb = String(b || '').split('.').map(n => parseInt(n, 10) || 0);
@@ -62,33 +57,6 @@ function getInstalledVersion(bin) {
   try { return parseVersion(execFileSync(bin, ['--version'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 5000, killSignal: 'SIGKILL' })); } catch {}
   try { return parseVersion(execFileSync(bin, ['-v'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 5000, killSignal: 'SIGKILL' })); } catch {}
   return '';
-}
-
-function checkRemoteUpdate(ws) {
-  const now = Date.now();
-  if (remoteUpdateCache && now - remoteUpdateCheckedAt < REMOTE_UPDATE_INTERVAL) {
-    ws.send(JSON.stringify({ type: 'remote.update', checked: true, ...remoteUpdateCache }));
-    return;
-  }
-  const shellOpt = process.platform === 'win32';
-  require('child_process').execFile('npm', ['list', '-g', 'clideck-remote', '--json', '--depth=0'], { shell: shellOpt, timeout: 10000 }, (err, stdout) => {
-    let installed;
-    try { installed = JSON.parse(stdout).dependencies['clideck-remote'].version; }
-    catch {
-      ws.send(JSON.stringify({ type: 'remote.update', available: false, checked: false }));
-      return;
-    }
-    require('child_process').execFile('npm', ['view', 'clideck-remote', 'version'], { shell: shellOpt, timeout: 10000 }, (err2, stdout2) => {
-      if (err2) {
-        ws.send(JSON.stringify({ type: 'remote.update', installed, available: false, checked: false }));
-        return;
-      }
-      const latest = stdout2.trim();
-      remoteUpdateCache = { installed, latest, available: compareVersions(latest, installed) > 0 };
-      remoteUpdateCheckedAt = now;
-      ws.send(JSON.stringify({ type: 'remote.update', checked: true, ...remoteUpdateCache }));
-    });
-  });
 }
 
 // Check which agent binaries are available on PATH
@@ -508,57 +476,6 @@ function onConnection(ws) {
       case 'pill.getLogs':
         ws.send(JSON.stringify({ type: 'pill.logs', id: msg.id, logs: plugins.getPillLogs(msg.id) }));
         break;
-
-      case 'remote.status': {
-        let installed = false;
-        try { execFileSync(whichCmd, ['clideck-remote'], { stdio: 'ignore' }); installed = true; } catch {}
-        if (!installed) { ws.send(JSON.stringify({ type: 'remote.status', installed: false })); break; }
-        require('child_process').execFile('clideck-remote', ['status', '--json'], { timeout: 5000, shell: process.platform === 'win32' }, (err, stdout) => {
-          if (err) { ws.send(JSON.stringify({ type: 'remote.status', installed: true })); return; }
-          try { ws.send(JSON.stringify({ type: 'remote.status', installed: true, ...JSON.parse(stdout) })); }
-          catch { ws.send(JSON.stringify({ type: 'remote.status', installed: true })); }
-        });
-        checkRemoteUpdate(ws);
-        break;
-      }
-
-      case 'remote.pair': {
-        require('child_process').execFile('clideck-remote', ['pair', '--json'], { timeout: 15000, shell: process.platform === 'win32' }, (err, stdout) => {
-          if (err) { ws.send(JSON.stringify({ type: 'remote.error', error: err.message })); return; }
-          try { ws.send(JSON.stringify({ type: 'remote.paired', ...JSON.parse(stdout) })); }
-          catch { ws.send(JSON.stringify({ type: 'remote.error', error: 'Invalid response from clideck-remote' })); }
-        });
-        break;
-      }
-
-      case 'remote.unpair': {
-        require('child_process').execFile('clideck-remote', ['unpair', '--json'], { timeout: 5000, shell: process.platform === 'win32' }, (err) => {
-          if (err) {
-            ws.send(JSON.stringify({ type: 'remote.error', error: err.message }));
-          } else {
-            sessions.broadcast({ type: 'remote.unpaired' });
-          }
-        });
-        break;
-      }
-
-      case 'remote.getHistory': {
-        ws.send(JSON.stringify({ type: 'remote.history', id: msg.id, turns: transcript.getTurns(msg.id, 20, 'end') }));
-        break;
-      }
-
-      case 'remote.install': {
-        const proc = require('child_process').spawn('npm', ['install', '-g', 'clideck-remote'], {
-          shell: true, stdio: ['ignore', 'pipe', 'pipe'],
-        });
-        proc.stdout.on('data', d => ws.send(JSON.stringify({ type: 'remote.install.progress', text: d.toString() })));
-        proc.stderr.on('data', d => ws.send(JSON.stringify({ type: 'remote.install.progress', text: d.toString() })));
-        proc.on('close', code => {
-          remoteUpdateCache = null;
-          ws.send(JSON.stringify({ type: 'remote.install.done', success: code === 0 }));
-        });
-        break;
-      }
 
       default:
         if (msg.type?.startsWith('plugin.')) plugins.handleMessage(msg);
