@@ -12,7 +12,7 @@ npm install -g clideck
 cat > /etc/clideck/clideck.env <<'EOF'
 CLIDECK_HOST=127.0.0.1
 CLIDECK_PORT=4000
-CLIDECK_ALLOWED_ORIGINS=https://myvps.tail-scales.ts.net
+CLIDECK_ALLOWED_ORIGINS=https://<FQDN>
 CLIDECK_PUBLIC_MODE=1
 CLIDECK_USERNAME=admin
 CLIDECK_PASSWORD=<strong-password>
@@ -51,7 +51,7 @@ tailscale serve status
 Output should look like:
 
 ```
-https://myvps.tail-scales.ts.net (tailnet only)
+https://<FQDN> (tailnet only)
 |-- / proxy http://127.0.0.1:4000
 ```
 

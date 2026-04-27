@@ -1,17 +1,24 @@
 [Unit]
 Description=Renew Tailscale cert for clideck
-After=tailscaled.service
-Wants=tailscaled.service
+# Don't try to renew before tailscaled is ready.
+After=tailscaled.service network-online.target
+Wants=tailscaled.service network-online.target
+# If clideck is masked or failed, skip the restart at the end.
+Wants=clideck.service
 
 [Service]
 Type=oneshot
 EnvironmentFile=/etc/clideck/clideck.env
-# Derive the FQDN from the allowed-origins env var
-ExecStart=/bin/bash -c '\
-  FQDN=$${CLIDECK_ALLOWED_ORIGINS#https://}; \
-  cd /etc/clideck/tls && \
-  /usr/bin/tailscale cert "$$FQDN" && \
-  mv -f "$${FQDN}.crt" fullchain.pem && \
-  mv -f "$${FQDN}.key" privkey.pem && \
-  chmod 600 privkey.pem && \
-  systemctl reload-or-restart clideck'
+# CLIDECK_TAILSCALE_FQDN is written by setup.sh as a dedicated var so we
+# don't have to parse the (possibly comma-separated) CLIDECK_ALLOWED_ORIGINS.
+ExecStart=/bin/bash -euc '\
+  : "$${CLIDECK_TAILSCALE_FQDN:?CLIDECK_TAILSCALE_FQDN must be set in clideck.env}"; \
+  cd /etc/clideck/tls; \
+  /usr/bin/tailscale cert "$${CLIDECK_TAILSCALE_FQDN}"; \
+  install -o clideck -g clideck -m 640 "$${CLIDECK_TAILSCALE_FQDN}.crt" fullchain.pem; \
+  install -o clideck -g clideck -m 600 "$${CLIDECK_TAILSCALE_FQDN}.key" privkey.pem; \
+  rm -f "$${CLIDECK_TAILSCALE_FQDN}.crt" "$${CLIDECK_TAILSCALE_FQDN}.key"; \
+  /bin/systemctl restart clideck'
+# Note: Node loads TLS certs once at process start — there is no in-process
+# reload path. We restart clideck so the new cert is picked up. Active
+# terminal sessions will drop. The monthly cadence keeps disruption rare.

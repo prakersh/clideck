@@ -47,36 +47,37 @@ sudo bash deploy/tailscale/setup.sh
 
 The script:
 
-1. Checks `tailscale status` and extracts your host's tailnet FQDN (e.g. `myvps.tail-scales.ts.net`).
-2. Runs `sudo tailscale cert <fqdn>` to issue / renew the Let's Encrypt cert.
-3. Moves the cert + key into `/etc/clideck/tls/` with restricted permissions.
-4. Writes `/etc/clideck/clideck.env` with the production env vars.
-5. Installs `clideck` globally via `npm` (if not present).
-6. Installs the `clideck.service` systemd unit, enables it, starts it.
-7. Prints the URL you should open on your phone.
+1. Checks `tailscale status` and extracts your host's tailnet FQDN (e.g. `<host>.<tailnet>.ts.net`).
+2. Creates a dedicated `clideck` system user with home in `/var/lib/clideck/`. The service runs as this user — *not* as root — so the systemd hardening directives (`ProtectSystem`, `NoNewPrivileges`, capability bounding) actually apply.
+3. Runs `sudo tailscale cert <fqdn>` to issue / renew the Let's Encrypt cert into `/etc/clideck/tls/` (root-owned dir, group-readable by `clideck`).
+4. Writes `/etc/clideck/clideck.env` with the production env vars **only on first run** — re-runs leave existing credentials in place. Delete the file to reset.
+5. Installs `clideck` globally via `npm` (if not present), then pins the systemd unit fetch to that exact npm version when downloaded via `curl | bash`.
+6. `setcap`s the resolved `node` binary so the unprivileged `clideck` user can bind `:443`. Warns when node is per-user (nvm/volta/fnm) since the cap is lost on the next node upgrade.
+7. Installs the `clideck.service` systemd unit and the monthly `clideck-cert-renew.timer`, enables and starts both.
+8. Prints the URL you should open on your phone.
 
-Nothing is written outside `/etc/clideck/` and `/etc/systemd/system/clideck.service`.
+Nothing is written outside `/etc/clideck/`, `/var/lib/clideck/`, and `/etc/systemd/system/clideck*.service{,.timer}`.
 
 ## Manual setup (if you don't want to run the script)
+
+> Throughout this section, `<FQDN>` is your host's full tailnet hostname (e.g. `myvps.taila85232.ts.net`) — get it with `tailscale status --json | jq -r '.Self.DNSName' | sed 's/\.$//'`.
+
+### 0. Create a dedicated user
+
+```bash
+sudo useradd --system --create-home --home-dir /var/lib/clideck --shell /usr/sbin/nologin clideck
+```
 
 ### 1. Issue a Tailscale certificate
 
 ```bash
-sudo tailscale cert myvps.tail-scales.ts.net
-# creates myvps.tail-scales.ts.net.crt and myvps.tail-scales.ts.net.key
+cd /etc/clideck/tls   # mkdir -p if first run
+sudo tailscale cert <FQDN>
+sudo install -o clideck -g clideck -m 640 "<FQDN>.crt" fullchain.pem
+sudo install -o clideck -g clideck -m 600 "<FQDN>.key" privkey.pem
 ```
 
-Move them to a stable location owned by the user that will run clideck:
-
-```bash
-sudo mkdir -p /etc/clideck/tls
-sudo mv myvps.tail-scales.ts.net.crt /etc/clideck/tls/fullchain.pem
-sudo mv myvps.tail-scales.ts.net.key /etc/clideck/tls/privkey.pem
-sudo chown -R clideck:clideck /etc/clideck
-sudo chmod 600 /etc/clideck/tls/privkey.pem
-```
-
-Tailscale certs expire. Renew with the same command (via cron / systemd timer — see the `renew-cert.sh` / `.service` / `.timer` files in this directory).
+Tailscale certs are 90 days. The bundled `cert-renew.timer` (installed as `clideck-cert-renew.timer`) re-runs `tailscale cert` monthly. Note that *Node loads TLS material once at startup* — there is no in-process reload. The renewal unit therefore restarts the clideck service after rotating the files. Active terminal sessions will drop during that restart; the monthly cadence keeps disruption rare.
 
 ### 2. Bind to the Tailscale interface
 
@@ -89,25 +90,28 @@ tailscale ip -4
 
 ### 3. Configure clideck
 
-Environment variables (set in `/etc/clideck/clideck.env` or the systemd unit):
+Write `/etc/clideck/clideck.env` (mode `640`, owner `root:clideck`). Note: systemd's `EnvironmentFile` parser is **not** a shell — `#` starts a comment, `$` is not interpolated, and unquoted values that contain those characters get truncated. **Quote every value** to be safe:
 
 ```bash
 # Bind only to the Tailscale interface — not 0.0.0.0
-CLIDECK_HOST=100.101.102.103
-CLIDECK_PORT=443
+CLIDECK_HOST="<TSIP>"
+CLIDECK_PORT="443"
 
 # TLS
-CLIDECK_TLS_CERT_PATH=/etc/clideck/tls/fullchain.pem
-CLIDECK_TLS_KEY_PATH=/etc/clideck/tls/privkey.pem
+CLIDECK_TLS_CERT_PATH="/etc/clideck/tls/fullchain.pem"
+CLIDECK_TLS_KEY_PATH="/etc/clideck/tls/privkey.pem"
 
-# Allowed origins for CSRF/origin checks
-CLIDECK_ALLOWED_ORIGINS=https://myvps.tail-scales.ts.net
+# CSRF/origin allowlist (must match exactly what the browser sends)
+CLIDECK_ALLOWED_ORIGINS="https://<FQDN>"
+
+# Used by clideck-cert-renew.service to know which hostname to renew
+CLIDECK_TAILSCALE_FQDN="<FQDN>"
 
 # Public deployment mode — require explicit credentials, no local-loopback bootstrap
-CLIDECK_PUBLIC_MODE=1
-CLIDECK_USERNAME=<choose a username>
-CLIDECK_PASSWORD=<choose a strong password>
-CLIDECK_COOKIE_SECURE=1
+CLIDECK_PUBLIC_MODE="1"
+CLIDECK_USERNAME="<choose a username>"
+CLIDECK_PASSWORD="<choose a strong password>"
+CLIDECK_COOKIE_SECURE="1"
 ```
 
 Binding to `:443` requires either `setcap 'cap_net_bind_service=+ep' $(command -v node)` or running clideck behind a reverse proxy. For a direct bind, `setcap` is the smallest hop:
@@ -129,7 +133,7 @@ sudo systemctl status clideck
 ### 5. Open on your phone
 
 ```
-https://myvps.tail-scales.ts.net/
+https://<FQDN>/
 ```
 
 On first visit, log in with the credentials you set. On iOS/Android, the browser's "Add to Home Screen" offer installs the PWA. After that, clideck launches like a native app — and because the phone is on Tailscale, it works from anywhere.
@@ -157,14 +161,14 @@ sudo ufw enable
 ## Verification checklist
 
 From your phone (on Tailscale):
-- [ ] `https://myvps.tail-scales.ts.net/` loads in a browser with no cert warning.
+- [ ] `https://<FQDN>/` loads in a browser with no cert warning.
 - [ ] Log in succeeds. Dashboard renders.
 - [ ] Create a shell session — keyboard input works, output streams.
 - [ ] Reload page — session is restored.
 - [ ] "Add to Home Screen" is offered. After install, the app opens without browser chrome.
 
 From outside your tailnet (disconnect Tailscale on the phone):
-- [ ] `https://myvps.tail-scales.ts.net/` **fails to resolve / connect** — this is correct.
+- [ ] `https://<FQDN>/` **fails to resolve / connect** — this is correct.
 - [ ] There is no exposed public port on the VPS.
 
 ## Troubleshooting

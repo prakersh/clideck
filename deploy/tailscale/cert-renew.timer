@@ -6,6 +6,7 @@ Description=Monthly renewal of Tailscale cert for clideck
 OnCalendar=monthly
 RandomizedDelaySec=6h
 Persistent=true
+Unit=clideck-cert-renew.service
 
 [Install]
 WantedBy=timers.target
