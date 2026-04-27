@@ -1,4 +1,6 @@
-const CACHE_VERSION = 'clideck-static-v4';
+// Bump CACHE_VERSION whenever the precache list changes — the activate
+// handler below will purge any cache whose key doesn't start with this prefix.
+const CACHE_VERSION = 'clideck-static-v5';
 const STATIC_CACHE = `${CACHE_VERSION}-precache`;
 const RUNTIME_CACHE = `${CACHE_VERSION}-runtime`;
 
@@ -8,7 +10,9 @@ const PRECACHE_URLS = [
   '/xterm.js',
   '/addon-fit.js',
   '/manifest.webmanifest',
-  '/img/clideck-logo-icon.png',
+  '/img/icon-192.png',
+  '/img/icon-512.png',
+  '/img/apple-touch-icon.png',
 ];
 
 const BYPASS_PREFIXES = ['/auth/', '/v1/', '/plugins/'];

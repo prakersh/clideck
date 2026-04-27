@@ -4,11 +4,18 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <meta name="theme-color" content="#0f172a">
+  <!-- iOS Home Screen / standalone install metadata. mobile-web-app-capable
+       is the modern equivalent of apple-mobile-web-app-capable; we keep both
+       for maximum browser coverage. -->
   <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="CliDeck">
+  <meta name="application-name" content="CliDeck">
   <title>CliDeck</title>
-  <link rel="icon" type="image/png" href="/img/clideck-logo-icon.png">
-  <link rel="apple-touch-icon" href="/img/clideck-logo-icon.png">
+  <link rel="icon" type="image/png" sizes="192x192" href="/img/icon-192.png">
+  <link rel="icon" type="image/png" sizes="512x512" href="/img/icon-512.png">
+  <link rel="apple-touch-icon" sizes="180x180" href="/img/apple-touch-icon.png">
   <link rel="manifest" href="/manifest.webmanifest">
   <link rel="stylesheet" href="/xterm.css">
   <link rel="stylesheet" href="/tailwind.css">
@@ -232,12 +239,24 @@
     #auth-card {
       position: relative;
       width: min(100%, 420px);
+      /* On mobile with the soft keyboard up, 100vh / 100dvh shrinks to the
+         visible viewport. Cap height + scroll-on-overflow so the password
+         field and submit button stay reachable. */
+      max-height: min(86dvh, 640px);
+      overflow-y: auto;
+      -webkit-overflow-scrolling: touch;
       padding: 2rem;
       border-radius: 24px;
       border: 1px solid rgba(148, 163, 184, 0.18);
       background: rgba(15, 23, 42, 0.92);
       box-shadow: 0 30px 80px rgba(2, 6, 23, 0.55);
       backdrop-filter: blur(16px);
+    }
+    @media (max-width: 480px) {
+      #auth-card {
+        padding: 1.5rem;
+        border-radius: 20px;
+      }
     }
     #auth-status.loading::after {
       content: '';
