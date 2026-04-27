@@ -125,9 +125,17 @@ function normalize(input, { discoverAliases = false } = {}) {
     const preset = cmd.presetId ? PRESETS.find(p => p.presetId === cmd.presetId) : matchPreset(cmd);
     // Stamp presetId for reliable lookup
     if (preset && !cmd.presetId) cmd.presetId = preset.presetId;
-    // Icon always syncs from preset — the preset is the source of truth for logos
-    if (preset) cmd.icon = preset.icon;
-    else if (!cmd.icon) cmd.icon = 'terminal';
+    // Icon syncs from preset only when the user hasn't customised it. A custom
+    // icon (set via the picker — see settings.js isValidCustomIcon) carries a
+    // distinct shape: an emoji grapheme, a path/url, or the string 'terminal'
+    // explicitly chosen by the user. We only stamp the preset icon when the
+    // current value is missing or matches a stale preset asset path.
+    if (preset) {
+      const presetIcons = new Set(PRESETS.map(p => p.icon).filter(Boolean));
+      if (!cmd.icon || presetIcons.has(cmd.icon)) cmd.icon = preset.icon;
+    } else if (!cmd.icon) {
+      cmd.icon = 'terminal';
+    }
     if (cmd.isAgent === undefined)          cmd.isAgent = preset?.isAgent ?? false;
     if (cmd.canResume === undefined)        cmd.canResume = preset?.canResume ?? false;
     if (cmd.resumeCommand === undefined)    cmd.resumeCommand = preset?.resumeCommand || null;

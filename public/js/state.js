@@ -15,6 +15,7 @@ export const state = {
   filter: { query: '', tab: 'all' },
   pills: new Map(),
   activePill: null,
+  projectActions: [],
   transcriptCache: {},
   auth: {
     ready: false,

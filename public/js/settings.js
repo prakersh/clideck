@@ -118,11 +118,16 @@ function isValidCustomIcon(value) {
   if (!value || !value.trim()) return false;
   const v = value.trim();
   if (v === 'terminal') return true;
-  if (/^https?:\/\/.+/.test(v)) return true;
+  // External http(s) URLs are intentionally rejected: the CSP
+  // (server.js img-src 'self' data: blob:) blocks third-party image hosts
+  // at the browser level, so even an "accepted" external URL would silently
+  // 404 on render. data: URIs (e.g., base64-inlined SVG/PNG) and same-origin
+  // /img/... paths are allowed.
+  if (/^data:image\/[a-z+]+;[a-z0-9-]+,/i.test(v)) return true;
   // Single grapheme (emoji or character)
   const graphemes = [...new Intl.Segmenter().segment(v)];
   if (graphemes.length === 1) return true;
-  // Named built-in icons (path-based)
+  // Same-origin asset path
   if (v.startsWith('/')) return true;
   return false;
 }
@@ -146,7 +151,7 @@ function openIconPicker(triggerEl, cardIdx) {
     </div>
   </div>
   <div class="custom-icon-input-wrap hidden mt-2 flex gap-1.5">
-    <input type="text" class="custom-icon-input flex-1 px-2 py-1.5 text-sm bg-slate-900 border border-slate-700 rounded text-slate-200 placeholder-slate-500 outline-none focus:border-blue-500 transition-colors" placeholder="emoji, URL, or \`terminal\`">
+    <input type="text" class="custom-icon-input flex-1 px-2 py-1.5 text-sm bg-slate-900 border border-slate-700 rounded text-slate-200 placeholder-slate-500 outline-none focus:border-blue-500 transition-colors" placeholder="emoji, /img/path, or \`terminal\`">
     <button class="custom-icon-apply px-2.5 py-1.5 text-xs bg-blue-600 hover:bg-blue-500 text-white rounded transition-colors">Apply</button>
   </div>`;
 
@@ -249,7 +254,7 @@ function renderAgentList() {
     const preset = telemetryPreset(c);
     const isBuiltIn = !!preset && c.command === preset.command;
     return `
-    <div class="agent-card p-4 bg-slate-800/50 border border-slate-700/50 rounded-lg" data-idx="${i}">
+    <div class="agent-card p-4 bg-slate-800/50 border border-slate-700/50 rounded-lg" data-idx="${i}" data-cmd-id="${esc(c.id || '')}">
       <div class="flex items-center gap-3 mb-3">
         <div class="agent-icon-btn cursor-pointer rounded-lg hover:ring-2 hover:ring-slate-500 transition-shadow" title="Change icon">
           ${agentIcon(c.icon)}
@@ -564,10 +569,14 @@ document.getElementById('btn-sound-preview').addEventListener('click', () => {
 // ── Save ──
 
 function saveConfig() {
-  // Agents
+  // Agents — look up the existing command by stable id (data-cmd-id) rather
+  // than DOM index, so a re-ordered or filtered card list does not splice the
+  // wrong command's icon/presetId/bridge into a renamed card.
+  const cmdById = new Map((state.cfg.commands || []).map(c => [c.id, c]));
   const agentCards = document.querySelectorAll('.agent-card');
   state.cfg.commands = [...agentCards].map((card, i) => {
-    const existing = state.cfg.commands[i] || {};
+    const cmdId = card.dataset.cmdId || '';
+    const existing = (cmdId && cmdById.get(cmdId)) || state.cfg.commands[i] || {};
     const command = card.querySelector('.agent-command').value.trim() || state.cfg.defaultShell || '/bin/zsh';
     const preset = findPresetForCommand(command, state.presets || [], existing.presetId);
     const isClaude = preset?.presetId === 'claude-code';

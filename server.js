@@ -83,19 +83,26 @@ const ALIASES = {
 };
 
 const PUBLIC_ROOT = join(__dirname, 'public');
-const CSP = [
-  "default-src 'self'",
-  "script-src 'self'",
-  "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
-  "font-src 'self' https://fonts.gstatic.com data:",
-  "img-src 'self' data: blob:",
-  "connect-src 'self' ws: wss:",
-  "media-src 'self' blob:",
-  "form-action 'self'",
-  "frame-ancestors 'none'",
-  "object-src 'none'",
-  "base-uri 'none'",
-].join('; ');
+function buildCsp(tls) {
+  // Only allow plaintext WebSockets when the server itself is plaintext.
+  // On HTTPS deployments (Tailscale, Caddy, etc.) the client always
+  // upgrades to wss://; permitting ws: would let a compromised script open
+  // a non-TLS socket to any host.
+  const connectSrc = tls ? "connect-src 'self' wss:" : "connect-src 'self' ws: wss:";
+  return [
+    "default-src 'self'",
+    "script-src 'self'",
+    "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
+    "font-src 'self' https://fonts.gstatic.com data:",
+    "img-src 'self' data: blob:",
+    connectSrc,
+    "media-src 'self' blob:",
+    "form-action 'self'",
+    "frame-ancestors 'none'",
+    "object-src 'none'",
+    "base-uri 'none'",
+  ].join('; ');
+}
 
 const geminiMenuPoll = new Map();
 
@@ -118,8 +125,9 @@ function requestPath(req) {
   return (req.url || '/').split('?')[0] || '/';
 }
 
+let cachedCsp = '';
 function applySecurityHeaders(req, res) {
-  res.setHeader('Content-Security-Policy', CSP);
+  res.setHeader('Content-Security-Policy', cachedCsp);
   res.setHeader('Referrer-Policy', 'no-referrer');
   res.setHeader('X-Content-Type-Options', 'nosniff');
   res.setHeader('X-Frame-Options', 'DENY');
@@ -404,6 +412,7 @@ async function handleRequest(req, res) {
 }
 
 const tlsOptions = loadTlsOptions();
+cachedCsp = buildCsp(!!tlsOptions);
 const server = tlsOptions
   ? https.createServer(tlsOptions, (req, res) => {
     handleRequest(req, res).catch((error) => {

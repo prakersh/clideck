@@ -249,9 +249,13 @@ function syncCommandWithPreset(cmd) {
 
   const adoptDefaults = shouldAdoptPresetDefaults(cmd);
   cmd.presetId = preset.presetId;
-  // Only sync icon from preset when a preset is actually matched; do not
-  // overwrite a user-set custom icon on preset-less commands.
-  if (preset) cmd.icon = preset.icon;
+  // Sync icon from preset only when the user hasn't customised it. A custom
+  // icon (set via the picker — see settings.js isValidCustomIcon) carries a
+  // distinct shape: an emoji grapheme, a path/url, or 'terminal' chosen by
+  // the user. We only stamp the preset icon when the current value is
+  // missing or matches a stale preset asset path that other presets ship.
+  const presetIcons = new Set(PRESETS.map(p => p.icon).filter(Boolean));
+  if (!cmd.icon || presetIcons.has(cmd.icon)) cmd.icon = preset.icon;
   if (adoptDefaults) {
     cmd.isAgent = preset.isAgent;
     cmd.canResume = preset.canResume;

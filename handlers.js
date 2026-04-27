@@ -291,11 +291,18 @@ function onConnection(ws) {
         ws.send(JSON.stringify({ type: 'config', config: configForClient() }));
         break;
 
-      case 'checkAvailability':
+      case 'checkAvailability': {
         checkAvailability();
-        if (detectTelemetryConfig(cfg)) config.save(cfg);
+        const detectionChanged = detectTelemetryConfig(cfg);
+        if (detectionChanged) config.save(cfg);
         ws.send(JSON.stringify({ type: 'presets', presets }));
+        // Telemetry detection mutates cmd.telemetryStatus and preset.health
+        // shapes that the client's settings + creator panes render. Without
+        // this rebroadcast, other connected clients keep their stale
+        // telemetryStatus until they reconnect.
+        if (detectionChanged) sessions.broadcast({ type: 'config', config: configForClient() });
         break;
+      }
 
       case 'config.update':
         delete msg.config.pluginsDir;
